@@ -346,6 +346,9 @@
                 $$\text{Var}(y_j) = d_1$$
             </p>
             <p>
+                it is important to note that the distribution of $y_j$ is <strong>not a normal gaussian</strong>. each product term $x_i w_{ij}$ is the product of two normals (a scale mixture of normals with heavy tails), meaning $y_j$ before taking the limit is technically non-gaussian. nevertheless, because finite variance terms combine under the central limit theorem as $d_1$ grows, we can still robustly compute and rely on its exact mean ($0$) and variance ($d_1$).
+            </p>
+            <p>
                 this reveals the core problem: <strong>the output variance grows linearly with input dimension $d_1$</strong>. with wide layers (e.g. $d_1 = 1024$), activation standard deviations reach $32$, causing exponential overflow or vanishing across deep networks.
             </p>
         </section>

@@ -91,13 +91,13 @@ The d1 terms are mutually uncorrelated (they involve different X_i and different
 
 **Not exactly.** Reasons:
 
-- Each term X_i W_ij is a *product* of two normals. That distribution is not normal; it is peaked at 0 with heavy tails (kurtosis 9 vs. 3 for a normal).
-- Conditioned on X, Y_j is exactly normal: Y_j | X ~ N(0, ||X||^2). But ||X||^2 is itself random (chi-squared with d1 degrees of freedom), so Y_j is a **scale mixture of normals**, which has heavier tails than a normal.
-- Its kurtosis is 3 + 6/d1, i.e. excess kurtosis 6/d1.
+- Each term $X_i W_{ij}$ is a *product* of two normals. That distribution is not normal; it is peaked at 0 with heavy tails (kurtosis 9 vs. 3 for a normal).
+- Conditioned on $X$, $Y_j$ is exactly normal: $Y_j \mid X \sim \mathcal{N}(0, \|X\|^2)$. But $\|X\|^2$ is itself random (chi-squared with $d_1$ degrees of freedom), so $Y_j$ is a **scale mixture of normals**, which has heavier tails than a normal.
+- Its kurtosis is $3 + \frac{6}{d_1}$, i.e. excess kurtosis $\frac{6}{d_1}$.
 
-However, by the **Central Limit Theorem**, a sum of d1 independent-ish terms with finite variance approaches a normal as d1 grows, and the excess kurtosis 6/d1 shrinks to 0. So:
+However, although the distribution of $Y_j$ is **not a normal Gaussian**, by the **Central Limit Theorem**, a sum of $d_1$ independent-ish terms with finite variance approaches a normal as $d_1$ grows, and the excess kurtosis $\frac{6}{d_1}$ shrinks to 0. Thus, we can still compute its mean and variance reliably:
 
-**Y_j ~ approximately N(0, d1)** (variance d1, not standard deviation), with the approximation improving as d1 grows.
+**$Y_j \sim \text{approximately } \mathcal{N}(0, d_1)$** (variance $d_1$, not standard deviation), with the approximation improving as $d_1$ grows.
 
 Yes, the answer is N_approx(0, d1). The mean is fine, but the variance **grows linearly with the width d1**, so the standard deviation grows like sqrt(d1). With d1 = 1024, outputs already have std of 32, and stacking layers compounds this exponentially. Activations explode (or, with the opposite scaling, vanish).
 
