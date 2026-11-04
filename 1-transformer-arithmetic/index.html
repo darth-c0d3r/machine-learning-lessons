@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>transformer arithmetic & resource estimation</title>
+    <!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- KaTeX for Math Rendering -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js" onload="renderMathInElement(document.body, { delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}] });"></script>
+    <style>
+        :root {
+            --bg-base: #09090b;
+            --bg-surface: #121216;
+            --border-subtle: rgba(255, 255, 255, 0.08);
+            --text-primary: #fafafa;
+            --text-secondary: #a1a1aa;
+            --accent: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.15);
+            --sign-col: #f43f5e;
+            --exp-col: #6366f1;
+            --frac-col: #10b981;
+            --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--font-sans);
+            background-color: var(--bg-base);
+            color: var(--text-primary);
+            line-height: 1.7;
+            padding: 80px 24px;
+        }
+
+        .layout {
+            max-width: 760px;
+            margin: 0 auto;
+        }
+
+        .back-link {
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--accent);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 32px;
+            transition: opacity 0.2s;
+        }
+
+        .back-link:hover {
+            opacity: 0.8;
+        }
+
+        header {
+            margin-bottom: 48px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        h1 {
+            font-size: 2.25rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            line-height: 1.15;
+            margin-bottom: 12px;
+            text-transform: lowercase;
+        }
+
+        section {
+            margin-bottom: 48px;
+        }
+
+        h2 {
+            font-size: 1.35rem;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            margin-bottom: 20px;
+            color: var(--text-primary);
+            text-transform: lowercase;
+        }
+
+        h3 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-top: 24px;
+            margin-bottom: 12px;
+            color: var(--text-primary);
+            text-transform: lowercase;
+        }
+
+        p {
+            margin-bottom: 20px;
+            font-size: 1.05rem;
+            color: var(--text-secondary);
+            text-align: justify;
+        }
+
+        ul {
+            margin-bottom: 20px;
+            padding-left: 24px;
+            color: var(--text-secondary);
+        }
+
+        li {
+            margin-bottom: 8px;
+            text-align: justify;
+        }
+
+        code {
+            font-family: var(--font-mono);
+            font-size: 0.9em;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: var(--text-primary);
+        }
+
+        pre {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 16px;
+            margin: 20px 0;
+            overflow-x: auto;
+        }
+
+        pre code {
+            background: transparent;
+            border: none;
+            padding: 0;
+            color: var(--text-primary);
+            font-size: 0.9rem;
+        }
+
+        .diagram-container {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 20px;
+            margin: 24px 0;
+        }
+
+        .diagram-title {
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--text-primary);
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        svg {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .legend-inline {
+            display: flex;
+            gap: 16px;
+            font-size: 0.85rem;
+            font-family: var(--font-mono);
+            margin-top: 12px;
+            color: var(--text-secondary);
+        }
+
+        .legend-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+            display: inline-block;
+            margin-right: 4px;
+        }
+
+        .divider {
+            border: none;
+            border-top: 1px solid var(--border-subtle);
+            margin: 48px 0;
+        }
+
+        footer {
+            margin-top: 80px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border-subtle);
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            font-family: var(--font-mono);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <a href="../design-language.md" class="back-link">&larr; design-language.md</a>
+
+        <header>
+            <h1>transformer arithmetic & resource estimation</h1>
+        </header>
+
+        <section>
+            <h2>overview</h2>
+            <p>understanding the computational and memory requirements of transformer models is essential for training llms efficiently, sizing gpu clusters, estimating training time, and provisioning inference infrastructure.</p>
+            <p>model computations are typically expressed in <strong>FLOPs</strong> (floating point operations). hardware accelerators like gpus specify their compute capacity in <strong>FLOPs/s</strong> (floating point operations per second). peak compute throughput varies significantly across data types, where lower-bit precision formats (such as FP8, INT8, or FP4) deliver higher tensor-core throughput than standard FP16 or BF16.</p>
+        </section>
+
+        <hr class="divider">
+
+        <section>
+            <h2>numerical data types in deep learning</h2>
+            <p>floating-point representations determine how numbers are stored in memory and processed by hardware accelerators. understanding the bit-level anatomy of data types is critical for balancing memory footprint against numerical stability.</p>
+
+            <h3>bit-level breakdown</h3>
+            <ul>
+                <li><strong><code>float32</code></strong> (32-bit = 4 bytes): <code>1 sign + 8 exponent + 23 fraction</code></li>
+                <li><strong><code>float16</code></strong> (16-bit = 2 bytes): <code>1 sign + 5 exponent + 10 fraction</code></li>
+                <li><strong><code>bfloat16</code></strong> (16-bit = 2 bytes): <code>1 sign + 8 exponent + 7 fraction</code></li>
+                <li><strong><code>fp8_e4m3</code></strong> (8-bit = 1 byte): <code>1 sign + 4 exponent + 3 fraction</code></li>
+                <li><strong><code>fp8_e5m2</code></strong> (8-bit = 1 byte): <code>1 sign + 5 exponent + 2 fraction</code></li>
+            </ul>
+
+            <!-- Visual Block Diagrams -->
+            <div class="diagram-container">
+                <div class="diagram-title">
+                    <span>float32 (32 bits / 4 bytes)</span>
+                    <span style="color: var(--text-secondary);">1s / 8e / 23f</span>
+                </div>
+                <svg viewBox="0 0 700 50" preserveAspectRatio="xMidYMid meet">
+                    <rect x="0" y="5" width="24" height="40" fill="var(--sign-col)" rx="3"/>
+                    <text x="12" y="30" fill="#fff" font-size="11" font-family="JetBrains Mono" text-anchor="middle">S</text>
+                    <rect x="28" y="5" width="168" height="40" fill="var(--exp-col)" rx="3"/>
+                    <text x="112" y="30" fill="#fff" font-size="12" font-family="JetBrains Mono" text-anchor="middle">Exponent (8 bits)</text>
+                    <rect x="200" y="5" width="498" height="40" fill="var(--frac-col)" rx="3"/>
+                    <text x="449" y="30" fill="#fff" font-size="12" font-family="JetBrains Mono" text-anchor="middle">Fraction / Mantissa (23 bits)</text>
+                </svg>
+            </div>
+
+            <div class="diagram-container">
+                <div class="diagram-title">
+                    <span>float16 (16 bits / 2 bytes)</span>
+                    <span style="color: var(--text-secondary);">1s / 5e / 10f</span>
+                </div>
+                <svg viewBox="0 0 700 50" preserveAspectRatio="xMidYMid meet">
+                    <rect x="0" y="5" width="44" height="40" fill="var(--sign-col)" rx="3"/>
+                    <text x="22" y="30" fill="#fff" font-size="11" font-family="JetBrains Mono" text-anchor="middle">S</text>
+                    <rect x="48" y="5" width="218" height="40" fill="var(--exp-col)" rx="3"/>
+                    <text x="157" y="30" fill="#fff" font-size="12" font-family="JetBrains Mono" text-anchor="middle">Exp (5)</text>
+                    <rect x="270" y="5" width="428" height="40" fill="var(--frac-col)" rx="3"/>
+                    <text x="484" y="30" fill="#fff" font-size="12" font-family="JetBrains Mono" text-anchor="middle">Fraction (10 bits)</text>
+                </svg>
+            </div>
+
+            <div class="diagram-container">
+                <div class="diagram-title">
+                    <span>bfloat16 (16 bits / 2 bytes)</span>
+                    <span style="color: var(--text-secondary);">1s / 8e / 7f</span>
+                </div>
+                <svg viewBox="0 0 700 50" preserveAspectRatio="xMidYMid meet">
+                    <rect x="0" y="5" width="44" height="40" fill="var(--sign-col)" rx="3"/>
+                    <text x="22" y="30" fill="#fff" font-size="11" font-family="JetBrains Mono" text-anchor="middle">S</text>
+                    <rect x="48" y="5" width="348" height="40" fill="var(--exp-col)" rx="3"/>
+                    <text x="222" y="30" fill="#fff" font-size="12" font-family="JetBrains Mono" text-anchor="middle">Exponent (8 bits)</text>
+                    <rect x="400" y="5" width="298" height="40" fill="var(--frac-col)" rx="3"/>
+                    <text x="549" y="30" fill="#fff" font-size="12" font-family="JetBrains Mono" text-anchor="middle">Fraction (7)</text>
+                </svg>
+            </div>
+
+            <div class="diagram-container">
+                <div class="diagram-title">
+                    <span>fp8 e4m3 (8 bits / 1 byte)</span>
+                    <span style="color: var(--text-secondary);">1s / 4e / 3f</span>
+                </div>
+                <svg viewBox="0 0 700 50" preserveAspectRatio="xMidYMid meet">
+                    <rect x="0" y="5" width="87" height="40" fill="var(--sign-col)" rx="3"/>
+                    <text x="43" y="30" fill="#fff" font-size="11" font-family="JetBrains Mono" text-anchor="middle">S</text>
+                    <rect x="91" y="5" width="305" height="40" fill="var(--exp-col)" rx="3"/>
+                    <text x="243" y="30" fill="#fff" font-size="12" font-family="JetBrains Mono" text-anchor="middle">Exponent (4 bits)</text>
+                    <rect x="400" y="5" width="298" height="40" fill="var(--frac-col)" rx="3"/>
+                    <text x="549" y="30" fill="#fff" font-size="12" font-family="JetBrains Mono" text-anchor="middle">Fraction (3 bits)</text>
+                </svg>
+            </div>
+
+            <div class="diagram-container">
+                <div class="diagram-title">
+                    <span>fp8 e5m2 (8 bits / 1 byte)</span>
+                    <span style="color: var(--text-secondary);">1s / 5e / 2f</span>
+                </div>
+                <svg viewBox="0 0 700 50" preserveAspectRatio="xMidYMid meet">
+                    <rect x="0" y="5" width="87" height="40" fill="var(--sign-col)" rx="3"/>
+                    <text x="43" y="30" fill="#fff" font-size="11" font-family="JetBrains Mono" text-anchor="middle">S</text>
+                    <rect x="91" y="5" width="393" height="40" fill="var(--exp-col)" rx="3"/>
+                    <text x="287" y="30" fill="#fff" font-size="12" font-family="JetBrains Mono" text-anchor="middle">Exponent (5 bits)</text>
+                    <rect x="488" y="5" width="210" height="40" fill="var(--frac-col)" rx="3"/>
+                    <text x="593" y="30" fill="#fff" font-size="12" font-family="JetBrains Mono" text-anchor="middle">Frac (2)</text>
+                </svg>
+            </div>
+
+            <div class="legend-inline">
+                <div><span class="legend-dot" style="background: var(--sign-col);"></span>Sign Bit</div>
+                <div><span class="legend-dot" style="background: var(--exp-col);"></span>Exponent (Range)</div>
+                <div><span class="legend-dot" style="background: var(--frac-col);"></span>Fraction (Precision)</div>
+            </div>
+
+            <h3>anatomy of a floating-point number</h3>
+            <p>the general mathematical value of a floating-point number is expressed as:</p>
+            <p style="text-align: center;">$$\text{value} = (-1)^S \times \left(1 + \frac{M}{2^m}\right) \times 2^{E - \text{bias}}$$</p>
+            <p>where the fractional term $\left(1 + \frac{M}{2^m}\right)$ ranges from $1$ (inclusive) to $2$ (exclusive).</p>
+
+            <h3>range vs. precision trade-off</h3>
+            <ul>
+                <li><strong>exponent ($E$)</strong>: determines the <strong>dynamic range</strong> (how high or low $2^x$ can go). having a high range for the exponent allows us to represent smaller numbers better and prevents underflow/overflow.</li>
+                <li><strong>fraction / mantissa ($M$)</strong>: determines the <strong>precision or resolution</strong> (the granularity between representable numbers).</li>
+            </ul>
+            <p><code>bfloat16</code> shares the same 8-bit exponent width as <code>float32</code>, giving it an identical dynamic range (making training numerically stable without frequent underflows), albeit at a lower precision due to the 7-bit mantissa.</p>
+            <p>inspecting numerical properties in python can be done via <code>torch.finfo</code>:</p>
+
+            <pre><code>import torch
+
+print(torch.finfo(torch.float32))</code></pre>
+
+            <h3>mixed precision training & data type roles</h3>
+            <p>16-bit data types are generally sufficient for feed-forward computations. however, training operations such as storing optimizer states (e.g., AdamW momentum/variance) and accumulating gradient values require 32-bit precision to prevent catastrophic cancellation and rounding errors. <strong>mixed precision training</strong> bridges this gap by executing forward and backward passes in 16-bit while maintaining master weights and optimizer updates in <code>float32</code>.</p>
+
+            <h3>modern hardware formats: FP8 (H100 GPUs)</h3>
+            <p>newer hardware architectures, such as nvidia h100 gpus, introduce 8-bit floating-point formats:</p>
+            <ul>
+                <li><strong>FP8 E4M3</strong>: 1 sign + 4 exponent + 3 fraction (higher precision, smaller range)</li>
+                <li><strong>FP8 E5M2</strong>: 1 sign + 5 exponent + 2 fraction (wider range matching fp16/bf16, lower precision)</li>
+            </ul>
+
+            <h3>intuition on FP32 vs. BF16 in mixed precision training</h3>
+            <p>think of <code>bfloat16</code> as something which is <strong>transitory</strong>. forward-pass values which are computed and used once are fine in <code>bf16</code>. but values that are being accumulated over time—such as gradient updates—must be maintained in <code>float32</code>.</p>
+        </section>
+
+        <footer>
+            <span>machine-learning-lessons</span>
+            <span>darth-c0d3r</span>
+        </footer>
+    </div>
+</body>
+</html>
