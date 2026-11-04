@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>why initialization matters</title>
+    <!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- KaTeX for Math Rendering -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js" onload="renderMathInElement(document.body, { delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}] });"></script>
+    <style>
+        :root {
+            --bg-base: #09090b;
+            --bg-surface: #121216;
+            --border-subtle: rgba(255, 255, 255, 0.08);
+            --text-primary: #fafafa;
+            --text-secondary: #a1a1aa;
+            --accent: #6366f1;
+            --accent-glow: rgba(99, 102, 241, 0.15);
+            --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--font-sans);
+            background-color: var(--bg-base);
+            color: var(--text-primary);
+            line-height: 1.7;
+            padding: 80px 24px;
+        }
+
+        .layout {
+            max-width: 760px;
+            margin: 0 auto;
+        }
+
+        .back-link {
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--accent);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 32px;
+            transition: opacity 0.2s;
+        }
+
+        .back-link:hover {
+            opacity: 0.8;
+        }
+
+        header {
+            margin-bottom: 48px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        h1 {
+            font-size: 2.25rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            line-height: 1.15;
+            text-transform: lowercase;
+        }
+
+        section {
+            margin-bottom: 48px;
+        }
+
+        h2 {
+            font-size: 1.35rem;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            margin-bottom: 20px;
+            color: var(--text-primary);
+            text-transform: lowercase;
+            border-bottom: 1px solid var(--border-subtle);
+            padding-bottom: 8px;
+        }
+
+        h3 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-top: 24px;
+            margin-bottom: 12px;
+            color: var(--text-primary);
+            text-transform: lowercase;
+        }
+
+        p {
+            margin-bottom: 20px;
+            font-size: 1.05rem;
+            color: var(--text-secondary);
+            text-align: justify;
+            text-transform: lowercase;
+        }
+
+        ul {
+            margin-bottom: 20px;
+            padding-left: 24px;
+            color: var(--text-secondary);
+        }
+
+        li {
+            margin-bottom: 8px;
+            text-align: justify;
+            text-transform: lowercase;
+        }
+
+        code {
+            font-family: var(--font-mono);
+            font-size: 0.9em;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: var(--text-primary);
+        }
+
+        pre {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 16px;
+            margin: 20px 0;
+            overflow-x: auto;
+        }
+
+        pre code {
+            background: transparent;
+            border: none;
+            padding: 0;
+            color: var(--text-primary);
+            font-size: 0.9rem;
+        }
+
+        .interactive-panel {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 24px;
+            margin: 32px 0;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        @media (max-width: 600px) {
+            .controls {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .control-group label {
+            display: block;
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            text-transform: lowercase;
+        }
+
+        .control-group input[type="range"] {
+            width: 100%;
+            accent-color: var(--accent);
+            background: var(--bg-base);
+        }
+
+        .control-group select {
+            width: 100%;
+            padding: 8px 12px;
+            background: var(--bg-base);
+            border: 1px solid var(--border-subtle);
+            border-radius: 4px;
+            color: var(--text-primary);
+            font-family: var(--font-mono);
+            font-size: 0.9rem;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border-subtle);
+        }
+
+        @media (max-width: 600px) {
+            .metrics-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .metric-card {
+            background: var(--bg-base);
+            border: 1px solid var(--border-subtle);
+            border-radius: 6px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .metric-val {
+            font-family: var(--font-mono);
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-top: 4px;
+        }
+
+        .metric-label {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            text-transform: lowercase;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 24px 0;
+            font-size: 0.95rem;
+        }
+
+        th, td {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-subtle);
+            text-align: left;
+            text-transform: lowercase;
+        }
+
+        th {
+            font-family: var(--font-mono);
+            font-weight: 600;
+            color: var(--text-primary);
+            background: var(--bg-surface);
+        }
+
+        td {
+            color: var(--text-secondary);
+        }
+
+        td code {
+            font-size: 0.85rem;
+        }
+
+        footer {
+            margin-top: 80px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border-subtle);
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            text-transform: lowercase;
+        }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <a href="../" class="back-link">← back to lessons</a>
+
+        <header>
+            <h1>why initialization matters</h1>
+        </header>
+
+        <section>
+            <h2>overview and motivation</h2>
+            <p>
+                when training deep neural networks, choosing how weights are initialized dictates whether activations flow stably or collapse into numerical chaos. without proper scaling, the variance of forward activations grows linearly with layer width, causing exponential explosion or vanishing gradients across deep architectures. this lesson investigates the mathematical foundations of matrix multiplication ($Y = X @ W$), deriving exact variance propagation rules and demonstrating why variance-preserving scaling (such as xavier and he initialization) is essential for stable gradient descent and preventing catastrophic overflows.
+            </p>
+        </section>
+
+        <section>
+            <h2>variance definition and useful form</h2>
+            <p>
+                variance measures the dispersion of a random variable around its expected value. by definition:
+            </p>
+            <p style="text-align: center;">
+                $$\text{Var}(A) = E[(A - E[A])^2]$$
+            </p>
+            <p>
+                expanding this expression using the linearity of expectation yields the computational form:
+            </p>
+            <p style="text-align: center;">
+                $$\text{Var}(A) = E[A^2] - (E[A])^2$$
+            </p>
+            <p>
+                similarly, covariance between two random variables $a$ and $b$ is defined as $\text{Cov}(a, b) = E[ab] - E[a]E[b]$.
+            </p>
+        </section>
+
+        <section>
+            <h2>variance of sums and products</h2>
+            <p>
+                for any two random variables $a$ and $b$:
+            </p>
+            <p style="text-align: center;">
+                $$\text{Var}(a + b) = \text{Var}(a) + \text{Var}(b) + 2\text{Cov}(a, b)$$
+            </p>
+            <p>
+                when $a$ and $b$ are independent, $\text{Cov}(a, b) = 0$, so variances simply add: $\text{Var}(a + b) = \text{Var}(a) + \text{Var}(b)$. for the product of independent zero-mean variables $a$ and $b$:
+            </p>
+            <p style="text-align: center;">
+                $$\text{Var}(ab) = \text{Var}(a)\text{Var}(b)$$
+            </p>
+            <p>
+                for a scaled variable $ka$, constants are pulled out squared: $\text{Var}(ka) = k^2 \text{Var}(a)$, while adding a constant $c$ leaves variance unchanged: $\text{Var}(a + c) = \text{Var}(a)$.
+            </p>
+        </section>
+
+        <section>
+            <h2>the linear layer setup: $Y = X @ W$</h2>
+            <p>
+                consider a standard linear layer activation where input vector $x$ has shape $(1 \times d_1)$ with i.i.d. entries $x_i \sim \mathcal{N}(0, 1)$, and weight matrix $w$ has shape $(d_1 \times d_2)$ with i.i.d. entries $w_{ij} \sim \mathcal{N}(0, 1)$ independent of $x$.
+            </p>
+            <p>
+                each output element $y_j$ is computed as the dot product:
+            </p>
+            <p style="text-align: center;">
+                $$y_j = \sum_{i=1}^{d_1} x_i w_{ij}$$
+            </p>
+            
+            <h3>mean and variance of $y_j$</h3>
+            <p>
+                since $x_i$ and $w_{ij}$ are independent zero-mean variables, $E[x_i w_{ij}] = 0$, leading to $E[y_j] = 0$. for the variance, each product term has $\text{Var}(x_i w_{ij}) = \text{Var}(x_i)\text{Var}(w_{ij}) = 1 \times 1 = 1$. because the $d_1$ terms are uncorrelated, their variances sum up:
+            </p>
+            <p style="text-align: center;">
+                $$\text{Var}(y_j) = d_1$$
+            </p>
+            <p>
+                this reveals the core problem: <strong>the output variance grows linearly with input dimension $d_1$</strong>. with wide layers (e.g. $d_1 = 1024$), activation standard deviations reach $32$, causing exponential overflow or vanishing across deep networks.
+            </p>
+        </section>
+
+        <section>
+            <h2>conclusion: the lecun solution</h2>
+            <p>
+                to counteract the linear growth of activation variance with input dimension $d_1$, we scale the weight distribution. by applying lecun initialization with scaling factor $k = \frac{1}{\sqrt{d_1}}$, we ensure that $\text{Var}(y_j) = d_1 \times \left(\frac{1}{\sqrt{d_1}}\right)^2 = 1$. this variance-preserving transformation stabilizes forward propagation, keeping activation variances at exactly $1$ across arbitrary layer widths.
+            </p>
+        </section>
+
+        <section>
+            <h2>interactive variance simulation</h2>
+            <p>
+                simulate $y_j = \sum_{i=1}^{d_1} x_i w_{ij}$ with adjustable input dimension $d_1$ and scaling factor $k$ to observe empirical variance versus theoretical predictions.
+            </p>
+
+            <div class="interactive-panel">
+                <div class="controls">
+                    <div class="control-group">
+                        <label for="dimInput">input dimension ($d_1$): <span id="dimVal">64</span></label>
+                        <input type="range" id="dimInput" min="8" max="1024" step="8" value="64">
+                    </div>
+                    <div class="control-group">
+                        <label for="initMode">weight initialization:</label>
+                        <select id="initMode">
+                            <option value="standard">standard $\mathcal{N}(0, 1)$ ($k = 1$)</option>
+                            <option value="xavier" selected>lecun initialization $\mathcal{N}(0, 1/d_1)$ ($k = 1/\sqrt{d_1}$)</option>
+                            <option value="custom">custom multiplier</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="controls" id="customControlGroup" style="display: none;">
+                    <div class="control-group" style="grid-column: span 2;">
+                        <label for="scaleInput">custom multiplier ($k$): <span id="scaleVal">0.125</span></label>
+                        <input type="range" id="scaleInput" min="0.001" max="1.0" step="0.001" value="0.125">
+                    </div>
+                </div>
+
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-label">theoretical variance</div>
+                        <div class="metric-val" id="theoVar">1.00</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">empirical variance</div>
+                        <div class="metric-val" id="empVar">1.01</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">empirical std dev</div>
+                        <div class="metric-val" id="empStd">1.00</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2>summary table</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>quantity</th>
+                        <th>result</th>
+                        <th>condition</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>Var(a)</code></td>
+                        <td>$E[a^2] - (E[a])^2$</td>
+                        <td>always</td>
+                    </tr>
+                    <tr>
+                        <td><code>Var(a + b)</code></td>
+                        <td>$\text{Var}(a) + \text{Var}(b) + 2\text{Cov}(a,b)$</td>
+                        <td>always</td>
+                    </tr>
+                    <tr>
+                        <td><code>Var(a + b)</code></td>
+                        <td>$\text{Var}(a) + \text{Var}(b)$</td>
+                        <td>independent</td>
+                    </tr>
+                    <tr>
+                        <td><code>Var(ab)</code></td>
+                        <td>$\text{Var}(a)\text{Var}(b)$</td>
+                        <td>independent, zero-mean</td>
+                    </tr>
+                    <tr>
+                        <td><code>Var(ka)</code></td>
+                        <td>$k^2 \text{Var}(a)$</td>
+                        <td>always</td>
+                    </tr>
+                    <tr>
+                        <td><code>E[y_j]</code> ($x, w \sim \mathcal{N}(0,1)$)</td>
+                        <td>$0$</td>
+                        <td>zero-mean inputs</td>
+                    </tr>
+                    <tr>
+                        <td><code>Var(y_j)</code> ($w \sim \mathcal{N}(0,1)$)</td>
+                        <td>$d_1$</td>
+                        <td>unscaled weights</td>
+                    </tr>
+                    <tr>
+                        <td><code>Var(y_j)</code> ($w \sim \mathcal{N}(0,1/d_1)$)</td>
+                        <td>$1$</td>
+                        <td>variance-preserving</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <footer>
+            <span>initialization basics</span>
+            <span>darth-c0d3r</span>
+        </footer>
+    </div>
+
+    <script>
+        const dimInput = document.getElementById('dimInput');
+        const dimVal = document.getElementById('dimVal');
+        const initMode = document.getElementById('initMode');
+        const customControlGroup = document.getElementById('customControlGroup');
+        const scaleInput = document.getElementById('scaleInput');
+        const scaleVal = document.getElementById('scaleVal');
+        
+        const theoVarEl = document.getElementById('theoVar');
+        const empVarEl = document.getElementById('empVar');
+        const empStdEl = document.getElementById('empStd');
+
+        function updateSimulation() {
+            const d1 = parseInt(dimInput.value);
+            dimVal.textContent = d1;
+
+            let k = 1.0;
+            if (initMode.value === 'standard') {
+                k = 1.0;
+                customControlGroup.style.display = 'none';
+            } else if (initMode.value === 'xavier') {
+                k = 1.0 / Math.sqrt(d1);
+                customControlGroup.style.display = 'none';
+            } else {
+                customControlGroup.style.display = 'block';
+                k = parseFloat(scaleInput.value);
+                scaleVal.textContent = k.toFixed(4);
+            }
+
+            const theoVar = (d1 * (k * k)).toFixed(2);
+            theoVarEl.textContent = theoVar;
+
+            // Monte Carlo simulation of y_j = sum_{i=1}^{d1} x_i * w_i
+            // where x_i ~ N(0,1), w_i ~ N(0, k^2)
+            const numSamples = 2000;
+            let sumY = 0;
+            let sumY2 = 0;
+
+            for (let s = 0; s < numSamples; s++) {
+                let y = 0;
+                for (let i = 0; i < d1; i++) {
+                    // Box-Muller transform for normal distribution
+                    const u1 = Math.max(1e-7, Math.random());
+                    const u2 = Math.random();
+                    const x = Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+                    
+                    const w1 = Math.max(1e-7, Math.random());
+                    const w2 = Math.random();
+                    const wRaw = Math.sqrt(-2.0 * Math.log(w1)) * Math.cos(2.0 * Math.PI * w2);
+                    const w = wRaw * k;
+
+                    y += x * w;
+                }
+                sumY += y;
+                sumY2 += y * y;
+            }
+
+            const meanY = sumY / numSamples;
+            const empVar = (sumY2 / numSamples) - (meanY * meanY);
+            const empStd = Math.sqrt(Math.max(0, empVar));
+
+            empVarEl.textContent = empVar.toFixed(2);
+            empStdEl.textContent = empStd.toFixed(2);
+        }
+
+        dimInput.addEventListener('input', updateSimulation);
+        initMode.addEventListener('change', updateSimulation);
+        scaleInput.addEventListener('input', updateSimulation);
+
+        // Initial run
+        updateSimulation();
+    </script>
+</body>
+</html>

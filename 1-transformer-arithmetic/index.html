@@ -89,6 +89,8 @@
             margin-bottom: 20px;
             color: var(--text-primary);
             text-transform: lowercase;
+            border-bottom: 1px solid var(--border-subtle);
+            padding-bottom: 8px;
         }
 
         h3 {
@@ -105,6 +107,7 @@
             font-size: 1.05rem;
             color: var(--text-secondary);
             text-align: justify;
+            text-transform: lowercase;
         }
 
         ul {
@@ -116,6 +119,7 @@
         li {
             margin-bottom: 8px;
             text-align: justify;
+            text-transform: lowercase;
         }
 
         code {
@@ -201,12 +205,13 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            text-transform: lowercase;
         }
     </style>
 </head>
 <body>
     <div class="layout">
-        <a href="../design-language.md" class="back-link">&larr; design-language.md</a>
+        <a href="../" class="back-link">← back to lessons</a>
 
         <header>
             <h1>transformer arithmetic & resource estimation</h1>
@@ -214,8 +219,8 @@
 
         <section>
             <h2>overview</h2>
-            <p>understanding the computational and memory requirements of transformer models is essential for training llms efficiently, sizing gpu clusters, estimating training time, and provisioning inference infrastructure.</p>
-            <p>model computations are typically expressed in <strong>FLOPs</strong> (floating point operations). hardware accelerators like gpus specify their compute capacity in <strong>FLOPs/s</strong> (floating point operations per second). peak compute throughput varies significantly across data types, where lower-bit precision formats (such as FP8, INT8, or FP4) deliver higher tensor-core throughput than standard FP16 or BF16.</p>
+            <p>understanding the computational and memory requirements of transformer models is essential for training llms efficiently, sizing gpu clusters, estimating training time, estimating inference latency and throughput, and provisioning inference infrastructure.</p>
+            <p>model computations are typically expressed in <strong>FLOPs</strong> (floating point operations). hardware accelerators like gpus specify their compute capacity in <strong>FLOPs/s</strong> (floating point operations per second). peak compute throughput varies significantly across data types, where lower-bit precision formats (such as FP8, INT8, or FP4) deliver higher tensor-core throughput than standard FP16 or BF16, which in-turn deliver higher throughput than FP32.</p>
         </section>
 
         <hr class="divider">
@@ -232,6 +237,8 @@
                 <li><strong><code>fp8_e4m3</code></strong> (8-bit = 1 byte): <code>1 sign + 4 exponent + 3 fraction</code></li>
                 <li><strong><code>fp8_e5m2</code></strong> (8-bit = 1 byte): <code>1 sign + 5 exponent + 2 fraction</code></li>
             </ul>
+
+            <p>newer hardware architectures, such as nvidia h100 gpus, introduce 8-bit floating-point formats.</p>
 
             <!-- Visual Block Diagrams -->
             <div class="diagram-container">
@@ -322,24 +329,17 @@
 
             <h3>range vs. precision trade-off</h3>
             <ul>
-                <li><strong>exponent ($E$)</strong>: determines the <strong>dynamic range</strong> (how high or low $2^x$ can go). having a high range for the exponent allows us to represent smaller numbers better and prevents underflow/overflow.</li>
+                <li><strong>exponent ($E$)</strong>: determines the <strong>dynamic range</strong> (how high or low $2^x$ can go). having a high range for the exponent allows us to represent smaller numbers better and prevents underflow.</li>
                 <li><strong>fraction / mantissa ($M$)</strong>: determines the <strong>precision or resolution</strong> (the granularity between representable numbers).</li>
             </ul>
             <p><code>bfloat16</code> shares the same 8-bit exponent width as <code>float32</code>, giving it an identical dynamic range (making training numerically stable without frequent underflows), albeit at a lower precision due to the 7-bit mantissa.</p>
-            <p>inspecting numerical properties in python can be done via <code>torch.finfo</code>:</p>
-
-            <pre><code>import torch
-
-print(torch.finfo(torch.float32))</code></pre>
+            <p>inspecting numerical properties in python can be done via <code>torch.finfo(torch.float32)</code>.</p>
 
             <h3>mixed precision training & data type roles</h3>
-            <p>16-bit data types are generally sufficient for feed-forward computations. however, training operations such as storing optimizer states (e.g., AdamW momentum/variance) and accumulating gradient values require 32-bit precision to prevent catastrophic cancellation and rounding errors. <strong>mixed precision training</strong> bridges this gap by executing forward and backward passes in 16-bit while maintaining master weights and optimizer updates in <code>float32</code>.</p>
-
-            <h3>modern hardware formats: FP8 (H100 GPUs)</h3>
-            <p>newer hardware architectures, such as nvidia h100 gpus, introduce 8-bit floating-point formats:</p>
             <ul>
-                <li><strong>FP8 E4M3</strong>: 1 sign + 4 exponent + 3 fraction (higher precision, smaller range)</li>
-                <li><strong>FP8 E5M2</strong>: 1 sign + 5 exponent + 2 fraction (wider range matching fp16/bf16, lower precision)</li>
+                <li>16-bit data types are generally sufficient for feed-forward computations.</li>
+                <li>however, training operations such as storing optimizer states (e.g., AdamW momentum/variance) and accumulating gradient values require 32-bit precision to prevent catastrophic cancellation and rounding errors.</li>
+                <li><strong>mixed precision training</strong> bridges this gap by executing forward and backward passes in 16-bit while maintaining master weights and optimizer updates in <code>float32</code>.</li>
             </ul>
 
             <h3>intuition on FP32 vs. BF16 in mixed precision training</h3>
@@ -347,7 +347,7 @@ print(torch.finfo(torch.float32))</code></pre>
         </section>
 
         <footer>
-            <span>machine-learning-lessons</span>
+            <span>transformer arithmetic & resource estimation</span>
             <span>darth-c0d3r</span>
         </footer>
     </div>
