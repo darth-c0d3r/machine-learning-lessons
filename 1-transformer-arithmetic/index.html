@@ -346,6 +346,375 @@
             <p>think of <code>bfloat16</code> as something which is <strong>transitory</strong>. forward-pass values which are computed and used once are fine in <code>bf16</code>. but values that are being accumulated over time—such as gradient updates—must be maintained in <code>float32</code>.</p>
         </section>
 
+        <hr class="divider">
+
+        <section>
+            <h2>counting parameters and flops: linear projection</h2>
+            <p>with the numerical data types established, we now turn to resource estimation. as our first building block, we examine a standard linear projection (matrix multiplication).</p>
+
+            <h3>setup</h3>
+            <p>consider an input matrix $X$ of shape $(\text{bs} \times d_1)$, where $\text{bs}$ represents the batch size (or number of tokens) and $d_1$ is the input feature dimension. we project this input through a weight matrix $W$ of size $(d_1 \times d_2)$ to produce an output matrix $Y = X @ W$ of shape $(\text{bs} \times d_2)$ (ignoring bias for simplicity).</p>
+
+            <h3>number of parameters</h3>
+            <p>the learnable parameters of the linear layer reside entirely within the weight matrix $W$. since $W$ has dimensions $d_1 \times d_2$, the total parameter count is:</p>
+            <p style="text-align: center;">$$\text{parameters} = d_1 \times d_2$$</p>
+
+            <h3>number of FLOPs (forward pass)</h3>
+            <p>each element in the output matrix $Y$ is computed as a dot product of a length-$d_1$ row of $X$ and a length-$d_1$ column of $W$. a single dot product of two vectors of length $d_1$ requires $d_1$ multiplications and $d_1 - 1$ additions, which counts as $2d_1$ floating-point operations (FLOPs).</p>
+
+            <!-- Matrix Multiplication Illustration -->
+            <div class="diagram-container">
+                <div class="diagram-title">
+                    <span>matrix multiplication dot product: $Y_{i,j} = \text{Row}_i(X) \cdot \text{Col}_j(W)$</span>
+                    <span style="color: var(--text-secondary);">2$d_1$ ops per output element</span>
+                </div>
+                <svg viewBox="0 0 700 160" preserveAspectRatio="xMidYMid meet">
+                    <!-- Matrix X -->
+                    <rect x="20" y="20" width="140" height="110" rx="6" fill="#18181b" stroke="var(--border-subtle)" stroke-width="1.5"/>
+                    <text x="90" y="42" fill="var(--text-primary)" font-size="12" font-family="JetBrains Mono" text-anchor="middle" font-weight="650">Input X</text>
+                    <text x="90" y="58" fill="var(--text-secondary)" font-size="10" font-family="JetBrains Mono" text-anchor="middle">bs × d₁</text>
+                    <!-- Highlight Row i -->
+                    <rect x="28" y="75" width="124" height="20" rx="3" fill="var(--accent)" fill-opacity="0.25" stroke="var(--accent)" stroke-width="1"/>
+                    <text x="90" y="90" fill="var(--text-primary)" font-size="11" font-family="JetBrains Mono" text-anchor="middle">Row i (length d₁)</text>
+
+                    <!-- Multiply Sign -->
+                    <text x="185" y="82" fill="var(--text-secondary)" font-size="18" font-family="JetBrains Mono" text-anchor="middle">×</text>
+
+                    <!-- Matrix W -->
+                    <rect x="220" y="20" width="140" height="110" rx="6" fill="#18181b" stroke="var(--border-subtle)" stroke-width="1.5"/>
+                    <text x="290" y="42" fill="var(--text-primary)" font-size="12" font-family="JetBrains Mono" text-anchor="middle" font-weight="650">Weight W</text>
+                    <text x="290" y="58" fill="var(--text-secondary)" font-size="10" font-family="JetBrains Mono" text-anchor="middle">d₁ × d₂</text>
+                    <!-- Highlight Col j -->
+                    <rect x="275" y="68" width="28" height="52" rx="3" fill="var(--frac-col)" fill-opacity="0.25" stroke="var(--frac-col)" stroke-width="1"/>
+                    <text x="290" y="145" fill="var(--frac-col)" font-size="10" font-family="JetBrains Mono" text-anchor="middle">Col j</text>
+
+                    <!-- Equals Sign -->
+                    <text x="385" y="82" fill="var(--text-secondary)" font-size="18" font-family="JetBrains Mono" text-anchor="middle">=</text>
+
+                    <!-- Matrix Y -->
+                    <rect x="420" y="20" width="140" height="110" rx="6" fill="#18181b" stroke="var(--border-subtle)" stroke-width="1.5"/>
+                    <text x="490" y="42" fill="var(--text-primary)" font-size="12" font-family="JetBrains Mono" text-anchor="middle" font-weight="650">Output Y</text>
+                    <text x="490" y="58" fill="var(--text-secondary)" font-size="10" font-family="JetBrains Mono" text-anchor="middle">bs × d₂</text>
+                    <!-- Highlight Element (i, j) -->
+                    <circle cx="490" cy="88" r="10" fill="var(--accent)" fill-opacity="0.4" stroke="var(--accent)" stroke-width="1.5"/>
+                    <text x="490" y="92" fill="var(--text-primary)" font-size="11" font-family="JetBrains Mono" text-anchor="middle">(i,j)</text>
+
+                    <!-- Explanatory text on the right -->
+                    <text x="580" y="62" fill="var(--text-primary)" font-size="11" font-family="JetBrains Mono" font-weight="600">Dot Product:</text>
+                    <text x="580" y="82" fill="var(--text-secondary)" font-size="10" font-family="JetBrains Mono">d₁ mults + d₁-1 adds</text>
+                    <text x="580" y="100" fill="var(--text-secondary)" font-size="10" font-family="JetBrains Mono">= 2d₁ FLOPs/element</text>
+                </svg>
+            </div>
+
+            <p>since output matrix $Y$ has dimensions $\text{bs} \times d_2$, there are $\text{bs} \times d_2$ individual dot products to compute. multiplying the operations per dot product by the total number of output elements gives:</p>
+            <p style="text-align: center;">$$\text{FLOPs} = \text{bs} \times d_2 \times 2d_1 = 2 \times \text{bs} \times d_1 \times d_2$$</p>
+
+            <p><em>note:</em> this is a simple introductory exercise, but we will be using similar calculations throughout to derive parameter counts and FLOPs for the entire transformer model (including attention projections, feed-forward networks, and layer norms).</p>
+        </section>
+
+        <section>
+            <h2>full transformer model architecture</h2>
+            <p>building upon our linear projection building block, the complete decoder-only transformer architecture stacks multiple identical layers together, transforming token inputs into vocabulary logits.</p>
+
+            <div class="diagram-container" style="max-width: 450px; margin: 24px auto;">
+                <div class="diagram-title"><span>transformer decoder architecture</span></div>
+                <svg viewBox="0 0 400 550" preserveAspectRatio="xMidYMid meet">
+                    <defs>
+                        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-secondary)"/>
+                        </marker>
+                        <marker id="arrow-res" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--frac-col)"/>
+                        </marker>
+                    </defs>
+
+                    <!-- Language Modeling Head -->
+                    <rect x="50" y="15" width="300" height="40" rx="4" fill="#18181b" stroke="var(--accent)" stroke-width="1.5"/>
+                    <text x="200" y="40" fill="var(--text-primary)" font-size="12" font-family="JetBrains Mono" text-anchor="middle">Language Modeling Head</text>
+
+                    <!-- Final Norm -->
+                    <rect x="50" y="75" width="300" height="30" rx="4" fill="#18181b" stroke="var(--border-subtle)"/>
+                    <text x="200" y="95" fill="var(--text-secondary)" font-size="11" font-family="JetBrains Mono" text-anchor="middle">Final Layer Norm</text>
+
+                    <!-- Decoder Block (repeated N times) -->
+                    <rect x="60" y="125" width="280" height="320" rx="4" fill="#121216" stroke="var(--accent)" stroke-dasharray="4 2"/>
+                    <text x="200" y="145" fill="var(--accent)" font-size="11" font-family="JetBrains Mono" text-anchor="middle">Decoder Block × num_layers</text>
+
+                    <!-- Block internals (bottom to top = data flow) -->
+                    <!-- Sub-block 2: LN2 -> FFN -> add -->
+                    <rect x="95" y="205" width="210" height="30" rx="4" fill="#18181b" stroke="var(--border-subtle)"/>
+                    <text x="200" y="225" fill="var(--text-secondary)" font-size="10" font-family="JetBrains Mono" text-anchor="middle">Feed Forward Network</text>
+
+                    <rect x="95" y="255" width="210" height="30" rx="4" fill="#18181b" stroke="var(--border-subtle)"/>
+                    <text x="200" y="275" fill="var(--text-secondary)" font-size="10" font-family="JetBrains Mono" text-anchor="middle">Layer Norm 2</text>
+
+                    <!-- Sub-block 1: LN1 -> Self-Attention -> add -->
+                    <rect x="95" y="345" width="210" height="30" rx="4" fill="#18181b" stroke="var(--border-subtle)"/>
+                    <text x="200" y="365" fill="var(--text-secondary)" font-size="10" font-family="JetBrains Mono" text-anchor="middle">Self-Attention</text>
+
+                    <rect x="95" y="395" width="210" height="30" rx="4" fill="#18181b" stroke="var(--border-subtle)"/>
+                    <text x="200" y="415" fill="var(--text-secondary)" font-size="10" font-family="JetBrains Mono" text-anchor="middle">Layer Norm 1</text>
+
+                    <!-- Add nodes -->
+                    <circle cx="200" cy="320" r="10" fill="#18181b" stroke="var(--frac-col)" stroke-width="1.5"/>
+                    <text x="200" y="324" fill="var(--frac-col)" font-size="13" font-family="JetBrains Mono" text-anchor="middle">+</text>
+                    <circle cx="200" cy="180" r="10" fill="#18181b" stroke="var(--frac-col)" stroke-width="1.5"/>
+                    <text x="200" y="184" fill="var(--frac-col)" font-size="13" font-family="JetBrains Mono" text-anchor="middle">+</text>
+
+                    <!-- Main data-flow arrows (upward) -->
+                    <line x1="200" y1="490" x2="200" y2="426" stroke="var(--text-secondary)" marker-end="url(#arrow)"/>   <!-- Emb -> LN1 -->
+                    <line x1="200" y1="395" x2="200" y2="376" stroke="var(--text-secondary)" marker-end="url(#arrow)"/>   <!-- LN1 -> SA -->
+                    <line x1="200" y1="345" x2="200" y2="331" stroke="var(--text-secondary)" marker-end="url(#arrow)"/>   <!-- SA -> add1 -->
+                    <line x1="200" y1="310" x2="200" y2="286" stroke="var(--text-secondary)" marker-end="url(#arrow)"/>   <!-- add1 -> LN2 -->
+                    <line x1="200" y1="255" x2="200" y2="236" stroke="var(--text-secondary)" marker-end="url(#arrow)"/>   <!-- LN2 -> FFN -->
+                    <line x1="200" y1="205" x2="200" y2="191" stroke="var(--text-secondary)" marker-end="url(#arrow)"/>   <!-- FFN -> add2 -->
+                    <line x1="200" y1="170" x2="200" y2="106" stroke="var(--text-secondary)" marker-end="url(#arrow)"/>   <!-- add2 -> Final LN -->
+                    <line x1="200" y1="75" x2="200" y2="56" stroke="var(--text-secondary)" marker-end="url(#arrow)"/>     <!-- Final LN -> Head -->
+
+                    <!-- Residual 1: block input (before LN1) skips LN1 + Self-Attention, rejoins at add1 -->
+                    <circle cx="200" cy="460" r="2.5" fill="var(--frac-col)"/>
+                    <path d="M 200 460 L 322 460 L 322 320 L 211 320" fill="none" stroke="var(--frac-col)" stroke-width="1.5" marker-end="url(#arrow-res)"/>
+
+                    <!-- Residual 2: add1 output (before LN2) skips LN2 + FFN, rejoins at add2 -->
+                    <circle cx="200" cy="298" r="2.5" fill="var(--frac-col)"/>
+                    <path d="M 200 298 L 322 298 L 322 180 L 211 180" fill="none" stroke="var(--frac-col)" stroke-width="1.5" marker-end="url(#arrow-res)"/>
+
+                    <!-- Embeddings -->
+                    <rect x="50" y="490" width="300" height="40" rx="4" fill="#18181b" stroke="var(--border-subtle)"/>
+                    <text x="200" y="515" fill="var(--text-primary)" font-size="12" font-family="JetBrains Mono" text-anchor="middle">Embeddings (Token + Pos)</text>
+                </svg>
+            </div>
+
+            <h3>core components</h3>
+            <ul>
+                <li><strong>token & positional embeddings (bottom)</strong>: converts input token IDs into continuous vectors of dimension $d_{\text{model}}$ and adds positional information.</li>
+                <li><strong>stacked decoder layers (<code>num_layers</code>)</strong>: multiple identical blocks repeating the sequence:
+                    <ul>
+                        <li><strong>layer norm 1</strong> &rarr; <strong>self-attention</strong> with <strong>residual connection 1</strong>.</li>
+                        <li><strong>layer norm 2</strong> &rarr; <strong>feed-forward network (FFN)</strong> with <strong>residual connection 2</strong>.</li>
+                    </ul>
+                </li>
+                <li><strong>language modeling head (top)</strong>: projects the final hidden states back to vocabulary logits to predict next tokens.</li>
+            </ul>
+        </section>
+
+        <section>
+            <h3>transformer inference: parameter and flop breakdown</h3>
+            <p>below we count the parameters and inference FLOPs of a decoder-only transformer, module by module. inference has two stages:</p>
+            <ul>
+                <li><strong>prefill (compute-bound):</strong> the whole prompt ($s$ tokens per sequence) is processed in parallel and the kv cache is filled. every weight matrix is read once and reused across $b \times s$ tokens, so arithmetic intensity is high and the large matmuls keep the compute units busy. latency here is the time to first token (ttft).</li>
+                <li><strong>decode (memory-bandwidth-bound):</strong> one new token per sequence is generated per step. every step still reads all weights and the whole kv cache, but each weight supports only $b$ tokens (about 2 flops per parameter per sequence), so step time is set by memory bandwidth, not flops. latency here is the time per output token (tpot).</li>
+            </ul>
+
+            <div class="data-table">
+                <table>
+                    <thead>
+                        <tr><th>symbol</th><th colspan="3">meaning</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr class="static"><td>$b$, $s$, $s_{\text{kv}}$</td><td colspan="3">batch size; prompt tokens (prefill length, also cached tokens at the start of decode); decode context length $s_{\text{kv}} = s + 1$ (cached plus the new token, ≈ $s$ for large $s$)</td></tr>
+                        <tr class="static"><td>$L$, $d_{\text{model}}$, $V$</td><td colspan="3">number of layers; model width; vocabulary size</td></tr>
+                        <tr class="static"><td>$nh$, $n_{kv}$, $d_{\text{head}}$, $d_{\text{hidden}}$</td><td colspan="3">query heads; kv heads ($n_{kv} = nh$ for mha); per-head width; ffn hidden width (≈ $4 \times d_{\text{model}}$)</td></tr>
+                        <tr class="static"><td>assumptions</td><td colspan="3">pre-norm blocks, mha, rope, relu ffn, rmsnorm, no biases, untied embeddings. a multiply-add = 2 flops; exp, divide and max = 1 flop each; per-row scalar ops (sqrt, ε) ignored. prefill computes the full $s \times s$ score matrix (no causal savings) and logits at every position. decode caches keys after rope.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="data-table">
+                <table>
+                    <thead>
+                        <tr><th>component</th><th>parameters</th><th>flops (prefill)</th><th>flops (decode)</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr class="notes-row-header"><td colspan="4" style="background:#18181b; font-weight:bold;">part 1: outside the layer loop</td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>token embedding</td><td>$V \times d_{\text{model}}$</td><td>0</td><td>0</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>a table lookup (gather of one row per token), not a matmul. the one-hot-matmul equivalent would cost $2 \times b \times s \times V \times d_{\text{model}}$, but no implementation does that.</p>
+                            <p>prefill gathers $b \times s$ rows; decode gathers only $b$ rows, so memory traffic is negligible even though the table is large.</p>
+                            <p>if the output projection is tied to this table, count these parameters once.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>positional embedding (only if not using rope)</td><td>max_seq $\times d_{\text{model}}$ (learned), 0 (sinusoidal)</td><td>$b \times s \times d_{\text{model}}$</td><td>$b \times d_{\text{model}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>the position lookup is free; only the elementwise add to the token embeddings costs flops, one add per element.</p>
+                            <p>sinusoidal tables are fixed functions of position and dimension, precomputed and cached, so no parameters and no per-pass generation cost. parameters depend on max_seq; flops depend on the sequence length actually run.</p>
+                            <p>in decode, the new token's position index is $s$ (the number of tokens already cached). skip this row entirely when using rope.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>final rmsnorm</td><td>$d_{\text{model}}$</td><td>$4 \times b \times s \times d_{\text{model}}$</td><td>$4 \times b \times d_{\text{model}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>gain vector only, no bias. the 4 flops per element are square, accumulate, divide by the rms, and scale by the gain.</p>
+                            <p>if prefill computes logits only for the last position, this norm is only needed there, so $s$ becomes 1. it is separate from the two per-layer norms.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>output projection (unembedding)</td><td>$d_{\text{model}} \times V$</td><td>$2 \times b \times s \times d_{\text{model}} \times V$</td><td>$2 \times b \times d_{\text{model}} \times V$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>a real matmul. tied weights change the parameter count (0 additional) but not the flops.</p>
+                            <p>prefill only needs the last position's logits to sample the next token, so many implementations compute just that one: $2 \times b \times d_{\text{model}} \times V$. the full-$s$ version applies to training, scoring and perplexity.</p>
+                            <p>for large vocabularies this is a big slice of decode cost: the $d_{\text{model}} \times V$ matrix is read in full every step and can be a large fraction of weight traffic in small models. softmax over logits and sampling are excluded (about $b \times V$, negligible).</p>
+                        </div></td></tr>
+
+                        <tr class="notes-row-header"><td colspan="4" style="background:#18181b; font-weight:bold;">part 2: inside each layer (repeated $L$ times)</td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>rmsnorm 1 (pre-attention)</td><td>$d_{\text{model}}$</td><td>$4 \times b \times s \times d_{\text{model}}$</td><td>$4 \times b \times d_{\text{model}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>same per-element count as the final norm (square, accumulate, divide, scale). standard layernorm would cost about 7 flops per element and $2 \times d_{\text{model}}$ parameters, which is why rmsnorm is slightly cheaper.</p>
+                            <p>decode normalizes only the new token.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>self-attn: q, k, v projections</td><td>$3 \times d_{\text{model}} \times nh \times d_{\text{head}}$</td><td>$6 \times b \times s \times d_{\text{model}} \times nh \times d_{\text{head}}$</td><td>$6 \times b \times d_{\text{model}} \times nh \times d_{\text{head}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>three linear layers, each $2 \times bs \times d_1 \times d_2$ with $bs = b \times s$, $d_1 = d_{\text{model}}$, $d_2 = nh \times d_{\text{head}}$.</p>
+                            <p>decode projects only the new token; its k and v are appended to the kv cache and cached tokens are never re-projected.</p>
+                            <p>with gqa/mqa, k and v output width shrinks to $n_{kv} \times d_{\text{head}}$: parameters become $d_{\text{model}} \times d_{\text{head}} \times (nh + 2 n_{kv})$ and prefill flops $2 \times b \times s \times d_{\text{model}} \times d_{\text{head}} \times (nh + 2 n_{kv})$.</p>
+                            <p>decode reads these weights in full every step for only $b$ tokens of work, a major source of its memory-bound behavior.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>self-attn: rope on q and k</td><td>0</td><td>$6 \times b \times s \times nh \times d_{\text{head}}$</td><td>$6 \times b \times nh \times d_{\text{head}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>each pair $(x_1, x_2)$ is rotated by a position-dependent angle: $x_1' = x_1 \cos - x_2 \sin$, $x_2' = x_1 \sin + x_2 \cos$. that is 4 multiplies and 2 adds per pair, or 3 flops per element. applied to q and k only (not v), so $3 \times 2 = 6$ per (token, head, $d_{\text{head}}$) position for mha. with gqa: $3 \times b \times s \times d_{\text{head}} \times (nh + n_{kv})$.</p>
+                            <p>cos/sin tables are precomputed and cached, so no per-pass generation cost.</p>
+                            <p>decode rotates only the new q and k because cached keys were stored already rotated. if an implementation re-rotates the whole cache, decode costs $3 \times b \times nh \times d_{\text{head}}$ (q) $+ 3 \times b \times s_{\text{kv}} \times nh \times d_{\text{head}}$ (k).</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>self-attn: s = qkᵀ</td><td>0</td><td>$2 \times b \times nh \times s^2 \times d_{\text{head}}$</td><td>$2 \times b \times nh \times s_{\text{kv}} \times d_{\text{head}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>prefill: per head, $(s \times d_{\text{head}}) @ (d_{\text{head}} \times s)$. the full $s \times s$ matrix is counted; causal masking could in principle halve it but the usual convention ignores that.</p>
+                            <p>decode: one query row against $s_{\text{kv}}$ cached keys, so cost is linear in context instead of quadratic.</p>
+                            <p>decode must read the whole key cache: $b \times s_{\text{kv}} \times n_{kv} \times d_{\text{head}}$ elements per layer. this traffic grows with context and is a second source of memory-boundedness alongside weight reads.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>self-attn: softmax</td><td>0</td><td>$5 \times b \times nh \times s^2$</td><td>$4 \times b \times nh \times s_{\text{kv}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>elementwise over the score matrix, so no $d_{\text{head}}$ factor. prefill's 5 ops per element: scale by $1/\sqrt{d_{\text{head}}}$, causal mask, exp, sum (reduction), divide.</p>
+                            <p>decode needs no mask since the single query may attend to every cached position, leaving 4 ops per element over the $s_{\text{kv}}$ scores per head.</p>
+                            <p>max-subtraction for numerical stability (compare + subtract, 2 more per element) is not counted. many implementations fold $1/\sqrt{d_{\text{head}}}$ into q and fused kernels (flashattention) fuse the mask; counting them keeps the tally conservative. softmax is about $1/d_{\text{head}}$ of the matmul cost, a small correction.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>self-attn: o = s·v</td><td>0</td><td>$2 \times b \times nh \times s^2 \times d_{\text{head}}$</td><td>$2 \times b \times nh \times s_{\text{kv}} \times d_{\text{head}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>same shape and cost as qkᵀ: $(s \times s) @ (s \times d_{\text{head}})$ per head in prefill, one row of weights against $s_{\text{kv}}$ cached values in decode. together the core matmuls total $4 \times b \times nh \times s^2 \times d_{\text{head}}$ (prefill) and $4 \times b \times nh \times s_{\text{kv}} \times d_{\text{head}}$ (decode).</p>
+                            <p>decode also reads the whole value cache, so total kv-cache reads per layer are $2 \times b \times s_{\text{kv}} \times n_{kv} \times d_{\text{head}}$ elements.</p>
+                            <p>with gqa the matmul flops stay the same (queries still use all $nh$ heads), but cache size and traffic shrink by $nh / n_{kv}$.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>self-attn: output projection</td><td>$d_{\text{model}} \times nh \times d_{\text{head}}$</td><td>$2 \times b \times s \times d_{\text{model}} \times nh \times d_{\text{head}}$</td><td>$2 \times b \times d_{\text{model}} \times nh \times d_{\text{head}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>maps the concatenated heads ($nh \times d_{\text{head}}$) back to $d_{\text{model}}$. decode applies it to the new token only.</p>
+                            <p>with q, k, v the attention projections total $4 \times d_{\text{model}} \times nh \times d_{\text{head}}$ parameters and $8 \times b \times s \times d_{\text{model}} \times nh \times d_{\text{head}}$ prefill flops.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>residual add 1 (around attention)</td><td>0</td><td>$b \times s \times d_{\text{model}}$</td><td>$b \times d_{\text{model}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>one elementwise add per element. counted here at the layer level, so do not count it again inside the attention block.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>rmsnorm 2 (pre-ffn)</td><td>$d_{\text{model}}$</td><td>$4 \times b \times s \times d_{\text{model}}$</td><td>$4 \times b \times d_{\text{model}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>identical in cost to rmsnorm 1. per layer the two norms total $2 \times d_{\text{model}}$ parameters and $8 \times b \times s \times d_{\text{model}}$ prefill flops.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>ffn: up projection</td><td>$d_{\text{model}} \times d_{\text{hidden}}$</td><td>$2 \times b \times s \times d_{\text{model}} \times d_{\text{hidden}}$</td><td>$2 \times b \times d_{\text{model}} \times d_{\text{hidden}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>maps $d_{\text{model}}$ to $d_{\text{hidden}}$; the common choice is $d_{\text{hidden}} = 4 \times d_{\text{model}}$. with a gated ffn (swiglu) there are two such matrices (gate and up), usually with $d_{\text{hidden}} \approx (8/3) \times d_{\text{model}}$.</p>
+                            <p>in decode the whole matrix is read to process $b$ tokens, which is memory-bound at small batch.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>ffn: relu</td><td>0</td><td>$b \times s \times d_{\text{hidden}}$</td><td>$b \times d_{\text{hidden}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>a single relu per layer, applied to the hidden activations, so the width is $d_{\text{hidden}}$ (not $d_{\text{model}}$). each element costs one max-with-zero.</p>
+                            <p>with swiglu, replace it with a silu (several flops per element) plus an elementwise gate × up multiply of $b \times s \times d_{\text{hidden}}$.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>ffn: down projection</td><td>$d_{\text{hidden}} \times d_{\text{model}}$</td><td>$2 \times b \times s \times d_{\text{model}} \times d_{\text{hidden}}$</td><td>$2 \times b \times d_{\text{model}} \times d_{\text{hidden}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>maps $d_{\text{hidden}}$ back to $d_{\text{model}}$. the ffn matmuls total $2 \times d_{\text{model}} \times d_{\text{hidden}}$ parameters and $4 \times b \times s \times d_{\text{model}} \times d_{\text{hidden}}$ prefill flops; with $d_{\text{hidden}} = 4 \times d_{\text{model}}$ that is $8 \times d_{\text{model}}^2$ parameters and $16 \times b \times s \times d_{\text{model}}^2$ flops.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>residual add 2 (around ffn)</td><td>0</td><td>$b \times s \times d_{\text{model}}$</td><td>$b \times d_{\text{model}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>the second per-layer residual, one elementwise add per element. counted here at the layer level, not inside the ffn.</p>
+                        </div></td></tr>
+
+                        <tr class="notes-row-header"><td colspan="4" style="background:#18181b; font-weight:bold;">part 3: totals</td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>per-layer total</td><td>$4 d_{\text{model}} \, nh \, d_{\text{head}} + 2 d_{\text{model}} d_{\text{hidden}} + 2 d_{\text{model}}$</td><td>$8 b s d_{\text{model}} nh\, d_{\text{head}} + 6 b s\, nh\, d_{\text{head}} + 4 b\, nh\, s^2 d_{\text{head}} + 5 b\, nh\, s^2 + 4 b s d_{\text{model}} d_{\text{hidden}} + b s d_{\text{hidden}} + 10 b s d_{\text{model}}$</td><td>$8 b d_{\text{model}} nh\, d_{\text{head}} + 6 b\, nh\, d_{\text{head}} + 4 b\, nh\, s_{\text{kv}} d_{\text{head}} + 4 b\, nh\, s_{\text{kv}} + 4 b d_{\text{model}} d_{\text{hidden}} + b d_{\text{hidden}} + 10 b d_{\text{model}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>the $10 \times b \times s \times d_{\text{model}}$ term is 2 rmsnorms (8) + 2 residuals (2).</p>
+                            <p>prefill: the projection and ffn term dominates at short context; the attention-core term $4 b s^2 d_{\text{model}}$ overtakes the projections once $s$ exceeds about $6 \times d_{\text{model}}$.</p>
+                            <p>decode: the attention-over-cache term grows linearly with context and overtakes the projection term once $s_{\text{kv}}$ exceeds about $6 \times d_{\text{model}}$.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>full model total</td><td>$V d_{\text{model}} + L \times (\text{per-layer params}) + d_{\text{model}} + d_{\text{model}} V$</td><td>$L \times (\text{per-layer prefill}) + 4 b s d_{\text{model}} + 2 b s d_{\text{model}} V$</td><td>$L \times (\text{per-layer decode}) + 4 b d_{\text{model}} + 2 b d_{\text{model}} V$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>parameters: add max_seq $\times d_{\text{model}}$ for learned positions; subtract $d_{\text{model}} V$ if embeddings are tied.</p>
+                            <p>flops: add $b \times s \times d_{\text{model}}$ (prefill) or $b \times d_{\text{model}}$ (decode) for an additive positional embedding. in prefill, replace $s$ with 1 in the last two terms if only last-position logits are computed.</p>
+                            <p>decode per-token flops are small, but each step reads all weights plus the full kv cache: about 2 flops per parameter per sequence in the batch. that is why decode is memory-bound at small batch and why batching more sequences improves hardware utilization.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>simplified per layer ($nh \, d_{\text{head}} = d_{\text{model}}$, $d_{\text{hidden}} = 4 d_{\text{model}}$)</td><td>$12 d_{\text{model}}^2 + 2 d_{\text{model}}$</td><td>$24 b s d_{\text{model}}^2 + 4 b s^2 d_{\text{model}} + 5 b\, nh\, s^2 + 20 b s d_{\text{model}}$</td><td>$24 b d_{\text{model}}^2 + 4 b s_{\text{kv}} d_{\text{model}} + 4 b\, nh\, s_{\text{kv}} + 20 b d_{\text{model}}$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>the 24 is 8 from the attention projections plus 16 from the ffn. the linear term of 20 is rope (6) + relu (4) + norms and residuals (10).</p>
+                        </div></td></tr>
+
+                        <tr class="notes-row-header"><td colspan="4" style="background:#18181b; font-weight:bold;">part 4: how cost scales with length (prefill $l_1$ tokens, decode generating the $l_2$-th token)</td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>time to first token (prefill)</td><td>n/a</td><td>$O(l_1 d^2 + l_1^2 d)$</td><td>n/a</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>here $d = d_{\text{model}}$ with $b$, $L$, $V$ fixed. the $l_1 d^2$ term comes from the ffn (and the attention projections, which scale the same way) and is linear in $l_1$. the $l_1^2 d$ term comes from self-attention (qkᵀ and s·v); its softmax part is $O(nh \, l_1^2)$.</p>
+                            <p>the output projection adds $O(l_1 d V)$ if logits are computed at every position, or $O(dV)$ for the last position only.</p>
+                            <p>ttft grows roughly linearly with prompt length while $l_1$ is small relative to $d$, then turns quadratic once $l_1$ exceeds about $6d$.</p>
+                        </div></td></tr>
+
+                        <tr onclick="toggleNotes(this)"><td>cost per subsequent token (decode)</td><td>n/a</td><td>n/a</td><td>$O(d^2 + (l_1 + l_2) d)$</td></tr>
+                        <tr class="notes-row"><td colspan="4"><div class="notes">
+                            <p>the $d^2$ term (ffn, projections, output projection) is constant because only the new token is processed. the $(l_1 + l_2) d$ term is self-attention over the kv cache, linear in context; its softmax part is $O(nh \, (l_1 + l_2))$.</p>
+                            <p>each new token costs roughly constant at short context, then grows linearly once $l_1 + l_2$ exceeds about $6d$.</p>
+                            <p>cumulative cost of generating $n$ tokens: $O(n d^2 + n \, l_1 d + n^2 d)$, quadratic in generated tokens and linear in prompt length for fixed $n$.</p>
+                            <p>memory traffic: kv-cache reads per step are also $O(l_1 + l_2)$ while weight reads stay constant. at long context the cache reads eventually exceed the weight reads, so step time starts growing with context length.</p>
+                        </div></td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>conclusion: how cost scales with length</h3>
+            <ul class="conclusion">
+                <li><strong>ttft (prefill, $l_1$ tokens):</strong> $O(l_1 d^2 + l_1^2 d)$. roughly linear in prompt length while $l_1$ is small relative to $d$ (ffn and projections dominate), turning quadratic once $l_1$ exceeds about $6d$ (self-attention dominates).</li>
+                <li><strong>tpot (decode, $l_2$-th token):</strong> $O(d^2 + (l_1 + l_2) d)$. flat at short context, then linear in context length once $l_1 + l_2$ exceeds about $6d$.</li>
+                <li><strong>when $l_2 \ll l_1$:</strong> the context is $l_1 + l_2 \approx l_1$ for every generated token, so tpot is set almost entirely by the prompt, $O(d^2 + l_1 d)$, and stays essentially constant across the generation instead of growing with $l_2$. the cumulative decode cost $O(l_2 d^2 + l_2 \, l_1 d + l_2^2 d)$ loses its $l_2^2 d$ term, leaving $O(l_2 d^2 + l_2 \, l_1 d)$.</li>
+                <li><strong>where the flops go:</strong> total request cost is prefill plus $l_2 \times$ tpot. since $l_2 \ll l_1$, prefill carries about $l_1 / l_2$ times the flops of decode (both its $d^2$ and its attention terms), so ttft dominates the flop count.</li>
+                <li><strong>wall-clock caveat:</strong> decode is memory-bound, so its time is not proportional to flops. each of the $l_2$ steps still reads all weights plus a kv cache that scales with $l_1$. with a long prompt, tpot rises with $l_1$ even when few tokens are generated, because cache reads eventually exceed weight reads.</li>
+                <li><strong>contrast, $l_2 \gg l_1$:</strong> tpot grows with $l_2$ as the cache fills, and the cumulative decode cost becomes quadratic in generated tokens.</li>
+            </ul>
+
+            <style>
+                .data-table { overflow-x: auto; margin: 24px 0; }
+                table { width: 100%; border-collapse: collapse; font-family: 'JetBrains Mono'; font-size: 0.85em; }
+                th, td { border: 1px solid var(--border-subtle); padding: 8px; text-align: left; vertical-align: top; }
+                th { background: #121216; }
+                tr { cursor: pointer; transition: background 0.2s; }
+                tr:hover { background: #18181b; }
+                tr.static { cursor: default; }
+                tr.static:hover { background: transparent; }
+                .notes-row { display: none; background: #121216; cursor: default; }
+                .notes-row:hover { background: #121216; }
+                .notes-row-header { background: #18181b; text-align: center; color: var(--text-secondary); cursor: default; }
+                .notes { padding: 12px; font-size: 11px; line-height: 1.4; color: var(--text-secondary); border-left: 2px solid var(--accent); }
+                .notes p { margin: 0 0 8px 0; }
+                .notes p:last-child { margin-bottom: 0; }
+                .hint { font-size: 0.85em; color: var(--text-secondary); margin-bottom: 8px; }
+            </style>
+            <script>
+                function toggleNotes(row) {
+                    let notes = row.nextElementSibling;
+                    if (notes && notes.classList.contains('notes-row')) {
+                        notes.style.display = (notes.style.display === 'table-row') ? 'none' : 'table-row';
+                    }
+                }
+            </script>
+        </section>
+
         <footer>
             <span>transformer arithmetic & resource estimation</span>
             <span>darth-c0d3r</span>
