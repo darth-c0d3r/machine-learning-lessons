@@ -376,7 +376,7 @@ The 20 · b · s · d_model linear term is RoPE (6) + ReLU (4) + norms and resid
 
 ---
 
-### Conclusion: How cost scales with length
+### conclusion: How cost scales with length
 
 - **TTFT (prefill, $s$ tokens):** $O(s \, d_{\text{model}}^2 + s^2 \, d_{\text{model}})$. Roughly linear in prompt length while $s$ is small relative to $d_{\text{model}}$, turning quadratic once $s$ exceeds about $6 \, d_{\text{model}}$.
 - **TPOT (decode, $l_2$-th token):** $O(d_{\text{model}}^2 + (s + l_2) d_{\text{model}})$. Flat at short context, then linear in context length once $s + l_2$ exceeds about $6 \, d_{\text{model}}$.
@@ -386,4 +386,64 @@ The 20 · b · s · d_model linear term is RoPE (6) + ReLU (4) + norms and resid
 - **Contrast, $l_2 \gg s$:** TPOT grows with $l_2$ as the cache fills, and cumulative decode cost becomes quadratic in generated tokens.
 
 ---
+
+## training-time flops
+
+training is shaped like prefill. the whole sequence is known in advance (teacher forcing), so all $s$ positions are processed in parallel, with no decode loop and no kv cache. like prefill, it is compute-bound, so time is roughly flops divided by achieved throughput. the cost of one training step has three parts: the forward pass, the backward pass, and the optimizer update.
+
+### forward pass
+
+this costs the same as the prefill stage over the same tokens, with logits computed at every position because the loss needs them. per token, it is about $2n + 4lds$ flops, where $n$ is the parameter count. the $2n$ comes from the weight matmuls, and the $4lds$ comes from the attention core (qkᵀ and s·v). this uses the full-matrix convention and $nh \cdot d_{\text{head}} = d$. this is the same number we saw in inference prefill, substituting $n = 12ld^2$ and multiplying by $s$, we have total flops for a sequence = $24ld^2s + 4lds^2$ (refer to part 3 in inference table).
+
+### backward pass
+
+this costs about 2x the forward pass. for a linear layer $y = xw$, backpropagation needs two matmuls, each the same size as the forward one:
+
+- $dx = dy \, w^\top$, the gradient with respect to the layer's input, which is passed to the previous layer
+- $dw = x^\top dy$, the gradient with respect to the weights
+
+the parameter-free attention matmuls (qkᵀ and s·v) follow the same 2x rule, because both of their operands need gradients. elementwise operations (norms, softmax, relu, residuals) have backward passes that cost about their forward cost. they are negligible next to the matmuls, so the 2x holds overall. the embedding gradient is a scatter-add into the table and costs essentially no flops.
+
+### optimizer update
+
+the update is elementwise over the parameters, so it costs $o(n)$ per step, independent of the number of tokens in the batch. plain sgd is about 2 flops per parameter, and adam is roughly 10 (momentum, variance, bias correction, and the update). forward plus backward costs about $6n$ per token, so over $b \cdot s$ tokens the optimizer is a fraction of about $1/(b \cdot s)$ of the total. for any realistic number of tokens per step, it is negligible.
+
+### loss
+
+softmax cross-entropy over the vocabulary costs about $b \cdot s \cdot v$, also small next to the matmuls.
+
+### total
+
+forward plus backward is 3x the forward pass, which gives the rule of thumb:
+
+$$\text{flops per step} \approx 6n \cdot (b s) + 12 \, l \, d \cdot b s^2$$
+
+the first term is the weight matmuls ($2nd$ forward, $4nd$ backward, with $d = b \cdot s$ tokens). the second is the attention core, which is quadratic in sequence length. the two terms are equal at $s \approx 6d$, using $n \approx 12 l d^2$ (see below). below that, $6nd$ is a good estimate, and cost is linear in tokens. above it, which can happen in long-context training, the attention term dominates, and cost per token rises with $s$. with causal masking, an implementation that skips the masked half does about half the attention work, but the full-matrix count is the usual convention.
+
+### why $n \approx 12 l d^2$
+
+per layer, the attention projections (q, k, v, o) contribute $4d^2$ parameters and the two ffn projections with $d_{\text{hidden}} = 4d$ contribute $2 \cdot d \cdot 4d = 8d^2$, so each layer has about $12d^2$ and the model has $n \approx 12 l d^2$ (ignoring embeddings, norms, and the output projection, which are small by comparison).
+
+### activation recomputation
+
+with gradient checkpointing, part of the forward pass is re-run during backward to save memory. full recomputation raises the total to about 4x forward ($8nd$), and selective recomputation falls between 3x and 4x. so the multiplier is 3x without checkpointing and up to 4x with it.
+
+### relation to inference
+
+the 3x figure is relative to a prefill-style forward pass with all-position logits. if inference computes only the last position's logits, the ratio is larger. however the takeaway is that training takes about 3x-4x flops as compared to inference prefill.
+
+### what flops don't capture
+
+- **memory:** backward needs the stored forward activations, which scale with $l \cdot b \cdot s \cdot d$. mixed-precision adam also holds about 16 bytes per parameter (weights, gradients, an fp32 master copy, and two moments).
+- **communication:** data-parallel gradient all-reduce and tensor-parallel collectives add time that doesn't show up in flop counts.
+- **utilization:** achieved throughput (mfu) is typically well below peak, so wall-clock time is flops divided by peak throughput times mfu.
+
+### aside: gradient checkpointing
+
+the problem: backward-pass needs the full forward pass intermediates. for a linear layer, the gradient computation needs the layer's input, and the non-linearities and softmax need their inputs or outputs too. normally you store all of them during forward, so the activation memory scales with $l . b . s . d$ + $l . b . nh . s^2$ for attention scores if they're materialized too. for large models and long sequences, this is often the largest memory cost.
+
+the trick: as with most optimizations in machine learning, we trade memory with compute. rather than storing all the intermediate values, we only store values at fixed checkpoints, like inputs of each layer, etc. then, during the backward-pass, when we arrive at a layer, we do the entire forward-pass of the layer again to regenerate the intermediate values, and then backpropagate through it.
+
+---
+
 transformer arithmetic & resource estimation — darth-c0d3r
