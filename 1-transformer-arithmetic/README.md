@@ -137,6 +137,10 @@ this document counts the parameters and inference FLOPs of a decoder-only transf
 - **prefill:** the whole prompt ($s$ tokens per sequence) is processed in parallel and the kv cache is filled. every weight matrix is read from memory once and reused across all $b \times s$ tokens, so each byte of weights supports a large amount of arithmetic (high arithmetic intensity). the large matmuls keep the compute units busy, so prefill is **compute-bound**. its latency is the time to first token (ttft).
 - **decode:** one new token per sequence is generated per step, attending to the cached keys and values. every step must still read all the weights (and the whole kv cache), but each weight is used for only $b$ tokens, about $2 \times b$ flops per parameter. with small $b$ the arithmetic per byte moved is very low, so decode is **memory-bandwidth-bound**: step time is set by how fast weights and the kv cache can be streamed from memory, not by flops. its latency is the time per output token (tpot).
 
+**compute bound vs. memory bound inference**
+
+the bottleneck of inference changes based on the operation and architecture. prefill is **compute-bound** because it performs extensive matrix multiplications across the entire prompt sequence, maximizing GPU tensor core utilization. conversely, decode is typically **memory-bound** because it performs a small number of operations per weight parameter, making memory bandwidth the limiting factor for tokens per second.
+
 #### notation and assumptions
 
 | symbol | meaning |
@@ -443,6 +447,14 @@ the 3x figure is relative to a prefill-style forward pass with all-position logi
 the problem: backward-pass needs the full forward pass intermediates. for a linear layer, the gradient computation needs the layer's input, and the non-linearities and softmax need their inputs or outputs too. normally you store all of them during forward, so the activation memory scales with $l . b . s . d$ + $l . b . nh . s^2$ for attention scores if they're materialized too. for large models and long sequences, this is often the largest memory cost.
 
 the trick: as with most optimizations in machine learning, we trade memory with compute. rather than storing all the intermediate values, we only store values at fixed checkpoints, like inputs of each layer, etc. then, during the backward-pass, when we arrive at a layer, we do the entire forward-pass of the layer again to regenerate the intermediate values, and then backpropagate through it.
+
+### compute-bound vs. memory-bound inference
+
+when a step (generating a single token during inference) processes only a few tokens (small batch size and/or a short prompt), latency is set mostly by memory, not arithmetic. the model’s weights live in HBM, and every step has to stream them to the on-chip memory (SRAM) of the compute units. that takes a fixed amount of time regardless of how many tokens are in the step, while the arithmetic on a handful of tokens is tiny by comparison. so in this regime, adding more tokens barely changes step time: the weights get loaded either way, and the extra tokens are almost free. in this regime, the overall compute time is dictated by loading weights, and hence adding more tokens or increasing batch size a little doesn't add much to total inference time.
+
+as tokens per step grow (a larger batch, or a longer prompt in prefill), each weight loaded from HBM is reused for more tokens. eventually the compute units become the bottleneck, and step time scales with FLOPs, which means it grows roughly linearly with the number of tokens. in terms of batch size, step latency is flat at first and linear later, while throughput (tokens per second) rises with batch size and then saturates. in this regime, the total inference time is dictated by the tokens in context - so adding more tokens or increasing batch size increases the total inference time (for a single step) linearly.
+
+in decode, the KV cache adds a second memory cost. unlike the weights, which are read once and shared by the whole batch, each sequence has its own cache, so the bytes read per step grow with batch size times context length. batching only amortizes the weight reads, not the cache reads. so at long contexts, step time keeps growing linearly with context length, and it can grow with batch size even before the weight matmuls become compute-bound. the cache reads can eventually dominate the step, which is why KV cache size often limits serving throughput, and why techniques like GQA, which shrink the cache, help so much. at longer context lengths, the overall time for both memory and compute is dictated by the sequence length / batch size.
 
 ---
 
