@@ -411,6 +411,8 @@
             <p><em>note:</em> this is a simple introductory exercise, but we will be using similar calculations throughout to derive parameter counts and FLOPs for the entire transformer model (including attention projections, feed-forward networks, and layer norms).</p>
         </section>
 
+        <hr class="divider">
+
         <section>
             <h2>full transformer model architecture</h2>
             <p>building upon our linear projection building block, the complete decoder-only transformer architecture stacks multiple identical layers together, transforming token inputs into vocabulary logits.</p>
@@ -714,6 +716,8 @@
             </script>
         </section>
 
+        <hr class="divider">
+
         <section>
             <h2>training-time flops</h2>
             <p>training is shaped like prefill. the whole sequence is known in advance (teacher forcing), so all $s$ positions are processed in parallel, with no decode loop and no kv cache. like prefill, it is compute-bound, so time is roughly flops divided by achieved throughput. the cost of one training step has three parts: the forward pass, the backward pass, and the optimizer update.</p>
@@ -759,12 +763,15 @@
             <h3>aside: gradient checkpointing</h3>
             <p>the problem: backward-pass needs the full forward pass intermediates. for a linear layer, the gradient computation needs the layer's input, and the non-linearities and softmax need their inputs or outputs too. normally you store all of them during forward, so the activation memory scales with $l . b . s . d$ + $l . b . nh . s^2$ for attention scores if they're materialized too. for large models and long sequences, this is often the largest memory cost.</p>
             <p>the trick: as with most optimizations in machine learning, we trade memory with compute. rather than storing all the intermediate values, we only store values at fixed checkpoints, like inputs of each layer, etc. then, during the backward-pass, when we arrive at a layer, we do the entire forward-pass of the layer again to regenerate the intermediate values, and then backpropagate through it.</p>
+        </section>
 
-            <h3>compute-bound vs. memory-bound inference</h3>
+        <hr class="divider">
+
+        <section>
+            <h2>compute-bound vs. memory-bound inference</h2>
             <p>when a step (generating a single token during inference) processes only a few tokens (small batch size and/or a short prompt), latency is set mostly by memory, not arithmetic. the model’s weights live in HBM, and every step has to stream them to the on-chip memory (SRAM) of the compute units. that takes a fixed amount of time regardless of how many tokens are in the step, while the arithmetic on a handful of tokens is tiny by comparison. so in this regime, adding more tokens barely changes step time: the weights get loaded either way, and the extra tokens are almost free. in this regime, the overall compute time is dictated by loading weights, and hence adding more tokens or increasing batch size a little doesn't add much to total inference time.</p>
             <p>as tokens per step grow (a larger batch, or a longer prompt in prefill), each weight loaded from HBM is reused for more tokens. eventually the compute units become the bottleneck, and step time scales with FLOPs, which means it grows roughly linearly with the number of tokens. in terms of batch size, step latency is flat at first and linear later, while throughput (tokens per second) rises with batch size and then saturates. in this regime, the total inference time is dictated by the tokens in context - so adding more tokens or increasing batch size increases the total inference time (for a single step) linearly.</p>
             <p>in decode, the KV cache adds a second memory cost. unlike the weights, which are read once and shared by the whole batch, each sequence has its own cache, so the bytes read per step grow with batch size times context length. batching only amortizes the weight reads, not the cache reads. so at long contexts, step time keeps growing linearly with context length, and it can grow with batch size even before the weight matmuls become compute-bound. the cache reads can eventually dominate the step, which is why KV cache size often limits serving throughput, and why techniques like GQA, which shrink the cache, help so much. at longer context lengths, the overall time for both memory and compute is dictated by the sequence length / batch size.</p>
-
         </section>
 
         <footer>
