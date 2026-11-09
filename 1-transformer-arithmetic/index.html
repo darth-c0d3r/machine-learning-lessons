@@ -774,6 +774,211 @@
             <p>in decode, the KV cache adds a second memory cost. unlike the weights, which are read once and shared by the whole batch, each sequence has its own cache, so the bytes read per step grow with batch size times context length. batching only amortizes the weight reads, not the cache reads. so at long contexts, step time keeps growing linearly with context length, and it can grow with batch size even before the weight matmuls become compute-bound. the cache reads can eventually dominate the step, which is why KV cache size often limits serving throughput, and why techniques like GQA, which shrink the cache, help so much. at longer context lengths, the overall time for both memory and compute is dictated by the sequence length / batch size.</p>
         </section>
 
+        <hr class="divider">
+
+        <section>
+            <h2>memory computations: will your workload fit on the gpu?</h2>
+            <p>before running a training or inference job, it is worth working out how much gpu memory it will need. memory is a hard constraint: if a job needs even slightly more than the gpu has, it fails with an out-of-memory error, often after it has already been queued or partly run. an estimate in advance tells you whether a model fits on one gpu or must be sharded across several, which batch sizes and sequence lengths are feasible, whether you need techniques like activation checkpointing, flash attention, or lower precision, and how much hardware to rent. it also shows where the memory goes, so you know which knob to turn when something does not fit. we start with training.</p>
+
+            <h3>where training memory goes</h3>
+            <p>for training, the primary occupants of gpu memory are: weights, gradients, optimizer states, activations, and transient intermediates. let's break them down one by one.</p>
+
+            <h4>model weights</h4>
+            <p>the entire model takes up space. we'll use an architecture-agnostic transformer with N billion parameters. with mixed-precision training, we keep a bf16 copy of the model (used for the forward and backward passes) and an fp32 master copy (used for the updates). this is 2 + 4 = 6 bytes per parameter. a useful rule of thumb is that 1 billion bytes = 1 GB, so the model takes up <code>N * 6 GB</code>. that's a hefty start - on to the next component.</p>
+
+            <h4>gradients</h4>
+            <p>this one is simple: every parameter has an associated gradient, and gradients are often stored in full precision, so we need a further <code>N * 4 GB</code>. (some setups keep bf16 gradients, which would take <code>N * 2 GB</code> instead).</p>
+
+            <h4>optimizer states</h4>
+            <p>the memory needed for optimizer states depends on your choice of optimizer. adam, for example, stores two states per parameter: a first moment (momentum) and a second moment (variance), usually in full precision. this requires a further <code>2 * N * 4 = N * 8 GB</code>. together, weights, gradients, and optimizer states take about <code>N * 18 GB</code> (roughly 126 GB for a 7B model), regardless of batch size or sequence length. that's a sizeable chunk of your beloved gpu - but we're just getting started.</p>
+
+            <h4>activations</h4>
+            <p>this is where things get interesting and murky. mathematically, we need the intermediate activations to compute gradients. however, as we saw earlier in the gradient checkpointing section (a.k.a. activation checkpointing), it is possible to trade stored activations for extra recomputation. we'll discuss both cases here. assume a batch size b, sequence length s, number of layers l, vocab size v, model dimension d, head dimension d_head, hidden dimension d_hidden, and number of heads nh. we'll also use the simplifying assumptions d_head * nh = d and d_hidden = 4 * d.</p>
+
+            <h4>case 1: no activation checkpointing</h4>
+            <p>for each layer, we need to store whatever backward propagation needs. we don't need to save the inputs and outputs of literally every sub-component, but we can side-step the detailed derivation here and jump to the results.</p>
+            <p>the saved values have two components: linear and quadratic in sequence length. the linear components per layer are the outputs of the two rms norms (2), the q/k/v projections (3), the attention output before the output projection (1), the two residual outputs (2), and the ffn hidden activation (4, since d_hidden = 4 * d). this sums to <code>b * s * d * (2 + 3 + 1 + 2 + 4) = 12 * b * s * d</code> values per layer. the quadratic component is the attention probabilities (the softmax output) for each head, which gives <code>b * nh * s^2</code> values per layer. finally, we need the logits, the output of the language-modeling head, which is <code>b * s * v</code> values.</p>
+            <p>with mixed-precision training, we store the per-layer values in half precision (2 bytes), and we assume the logits are stored in full precision (4 bytes) for the loss computation. this gives a total of <code>l * (24 * b * s * d + 2 * b * nh * s^2) + 4 * b * s * v</code> bytes. (this ignores small terms such as the final rms norm buffers.)</p>
+
+            <h4>case 2: activation checkpointing and flash attention</h4>
+            <p>flash attention uses a fused kernel that computes the attention output tile by tile on-chip. the <code>b * nh * s^2</code> score matrix is therefore never stored in memory, and the scores are simply recomputed during the backward pass. (only a small per-row statistic is saved, which is negligible.) flash attention can be used on its own, which removes only the quadratic term and gives <code>l * 24 * b * s * d + 4 * b * s * v</code> bytes.</p>
+            <p>adding activation checkpointing at each layer, we only need to save the input of each layer, which is <code>b * s * d</code> values (2 bytes each) per layer. the total saved is then <code>2 * l * b * s * d + 4 * b * s * v</code> bytes. at peak, while a layer is being recomputed during the backward pass, that layer's full activations (about <code>24 * b * s * d</code> bytes) are alive as well, on top of the saved checkpoints.</p>
+
+            <h4>transient intermediates</h4>
+            <p>these are the buffers that flow through the network during the backward pass, such as intermediate gradients (dX and so on), one layer's worth at a time, plus matmul workspaces. most of them are small compared to the saved activations. the main exception is the gradient of the logits: it has the same shape as the logits (<code>b * s * v</code>) and exists at the start of the backward pass while the logits are still alive. if the logits are in fp32, this can add another <code>4 * b * s * v</code> bytes, so for large vocabularies it is worth counting explicitly. beyond that, it is useful to keep a 5-10% buffer for the remaining intermediates, workspaces, and allocator fragmentation.</p>
+
+            <h3 style="margin-top: 40px; text-transform: lowercase;">interactive training memory calculator</h3>
+            <p style="margin-bottom: 20px;">configure your model parameters, hyperparameters, and feature options below to calculate exact GPU memory consumption in gigabytes (GB) component-by-component.</p>
+
+            <div class="calc-container" style="background: #121216; border: 1px solid var(--border-subtle); padding: 24px; border-radius: 6px; margin-bottom: 32px;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">model params (N in billions)</label>
+                        <input type="number" id="calc-n" value="7" step="0.1" min="0.1" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.9em; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">vocab size (V)</label>
+                        <input type="number" id="calc-v" value="32000" step="1000" min="1000" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.9em; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">model dimension (d)</label>
+                        <input type="number" id="calc-d" value="4096" step="128" min="256" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.9em; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">number of layers (L)</label>
+                        <input type="number" id="calc-l" value="32" step="1" min="1" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.9em; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">number of heads (nh)</label>
+                        <input type="number" id="calc-nh" value="32" step="1" min="1" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.9em; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">batch size (b)</label>
+                        <input type="number" id="calc-b" value="2" step="1" min="1" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.9em; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">sequence length (s)</label>
+                        <input type="number" id="calc-s" value="2048" step="128" min="64" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.9em; border-radius: 4px;">
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; border-top: 1px solid var(--border-subtle); padding-top: 20px; margin-bottom: 24px;">
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">training weight mode</label>
+                        <select id="calc-weight-mode" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.85em; border-radius: 4px;">
+                            <option value="mixed">mixed precision (bf16 model + fp32 master, 6 B/param)</option>
+                            <option value="fp16">standard fp16 (2 B/param)</option>
+                            <option value="fp32">full precision fp32 (4 B/param)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">gradient precision</label>
+                        <select id="calc-grad-mode" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.85em; border-radius: 4px;">
+                            <option value="fp32">fp32 gradients (4 bytes/param)</option>
+                            <option value="bf16">bf16/fp16 gradients (2 bytes/param)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">optimizer states</label>
+                        <select id="calc-opt-mode" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.85em; border-radius: 4px;">
+                            <option value="adam">adamw (fp32 moments, 8 bytes/param)</option>
+                            <option value="sgd">sgd with momentum (4 bytes/param)</option>
+                            <option value="none">none / inference (0 bytes)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">activation handling</label>
+                        <select id="calc-act-mode" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.85em; border-radius: 4px;">
+                            <option value="none">standard (no flash attn, no checkpointing)</option>
+                            <option value="flash">flash attention only (removes b*nh*s²)</option>
+                            <option value="checkpoint">activation checkpointing + flash attention</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="data-table" style="margin: 0;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width: 60%;">component</th>
+                                <th style="width: 40%; text-align: right;">total memory</th>
+                            </tr>
+                        </thead>
+                        <tbody id="calc-results-tbody">
+                            <!-- populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <script>
+                function updateMemoryCalc() {
+                    const N = parseFloat(document.getElementById('calc-n').value) || 0; // in billions
+                    const V = parseFloat(document.getElementById('calc-v').value) || 0;
+                    const d = parseFloat(document.getElementById('calc-d').value) || 0;
+                    const L = parseFloat(document.getElementById('calc-l').value) || 0;
+                    const nh = parseFloat(document.getElementById('calc-nh').value) || 0;
+                    const b = parseFloat(document.getElementById('calc-b').value) || 0;
+                    const s = parseFloat(document.getElementById('calc-s').value) || 0;
+
+                    const weightMode = document.getElementById('calc-weight-mode').value;
+                    const gradMode = document.getElementById('calc-grad-mode').value;
+                    const optMode = document.getElementById('calc-opt-mode').value;
+                    const actMode = document.getElementById('calc-act-mode').value;
+
+                    // 1 Billion params = 10^9 parameters
+                    const paramsBytes = N * 1e9;
+
+                    // Weights bytes
+                    let weightBytes = 0;
+                    if (weightMode === 'mixed') weightBytes = paramsBytes * 6; // bf16 (2) + fp32 master (4)
+                    else if (weightMode === 'fp16') weightBytes = paramsBytes * 2;
+                    else if (weightMode === 'fp32') weightBytes = paramsBytes * 4;
+
+                    // Gradients bytes
+                    let gradBytes = 0;
+                    if (gradMode === 'fp32') gradBytes = paramsBytes * 4;
+                    else if (gradMode === 'bf16') gradBytes = paramsBytes * 2;
+
+                    // Optimizer states bytes
+                    let optBytes = 0;
+                    if (optMode === 'adam') optBytes = paramsBytes * 8; // 2 moments * 4 bytes
+                    else if (optMode === 'sgd') optBytes = paramsBytes * 4;
+                    else if (optMode === 'none') optBytes = 0;
+
+                    // Activations bytes
+                    // Linear components: L * 12 * b * s * d values * 2 bytes (half precision)
+                    let linActBytes = L * 12 * b * s * d * 2;
+                    // Quadratic attention component: L * b * nh * s^2 values * 2 bytes
+                    let quadActBytes = L * b * nh * s * s * 2;
+                    // Logits: b * s * V * 4 bytes (fp32)
+                    let logitsBytes = b * s * V * 4;
+
+                    let actBytes = 0;
+                    if (actMode === 'none') {
+                        actBytes = linActBytes + quadActBytes + logitsBytes;
+                    } else if (actMode === 'flash') {
+                        actBytes = linActBytes + logitsBytes; // no quad component
+                    } else if (actMode === 'checkpoint') {
+                        // Saved checkpoints: 2 * L * b * s * d * 2 bytes + peak activation during recompute (~ linActBytes / L or full layer)
+                        actBytes = (2 * L * b * s * d * 2) + ((linActBytes / L) * 2) + logitsBytes;
+                    }
+
+                    // Transient intermediates & buffers (~ 5% of activation + weights or fixed buffer)
+                    let transientBytes = (weightBytes + gradBytes + actBytes) * 0.05;
+
+                    const totalBytes = weightBytes + gradBytes + optBytes + actBytes + transientBytes;
+
+                    const toGB = (bytes) => (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' gb';
+
+                    const rows = [
+                        { name: 'model weights (' + weightMode + ')', val: toGB(weightBytes) },
+                        { name: 'gradients (' + gradMode + ')', val: toGB(gradBytes) },
+                        { name: 'optimizer states (' + optMode + ')', val: toGB(optBytes) },
+                        { name: 'activations (' + actMode + ')', val: toGB(actBytes) },
+                        { name: 'transient intermediates & buffer (5%)', val: toGB(transientBytes) },
+                        { name: 'total gpu memory required', val: toGB(totalBytes), highlight: true }
+                    ];
+
+                    const tbody = document.getElementById('calc-results-tbody');
+                    tbody.innerHTML = rows.map(r => `
+                        <tr class="static" ${r.highlight ? 'style="font-weight: bold; background: #18181b; color: #6366f1;"' : ''}>
+                            <td>${r.name}</td>
+                            <td style="text-align: right; font-family: 'JetBrains Mono';">${r.val}</td>
+                        </tr>
+                    `).join('');
+                }
+
+                document.querySelectorAll('.calc-container input, .calc-container select').forEach(el => {
+                    el.addEventListener('input', updateMemoryCalc);
+                    el.addEventListener('change', updateMemoryCalc);
+                });
+
+                // Initial calculation run
+                updateMemoryCalc();
+            </script>
+        </section>
+
         <footer>
             <span>transformer arithmetic & resource estimation</span>
             <span>darth-c0d3r</span>

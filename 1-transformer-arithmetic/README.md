@@ -127,7 +127,6 @@ building upon our linear projection building block, the complete decoder-only tr
    * **layer norm 2** $\rightarrow$ **feed-forward network (FFN)** with **residual connection 2**.
 3. **language modeling head (top)**: projects the final hidden states back to vocabulary logits to predict next tokens.
 
-
 ## transformer inference: parameter and flop breakdown
 
 ### introduction
@@ -448,13 +447,59 @@ the problem: backward-pass needs the full forward pass intermediates. for a line
 
 the trick: as with most optimizations in machine learning, we trade memory with compute. rather than storing all the intermediate values, we only store values at fixed checkpoints, like inputs of each layer, etc. then, during the backward-pass, when we arrive at a layer, we do the entire forward-pass of the layer again to regenerate the intermediate values, and then backpropagate through it.
 
-### compute-bound vs. memory-bound inference
+---
+
+## compute-bound vs. memory-bound inference
 
 when a step (generating a single token during inference) processes only a few tokens (small batch size and/or a short prompt), latency is set mostly by memory, not arithmetic. the model’s weights live in HBM, and every step has to stream them to the on-chip memory (SRAM) of the compute units. that takes a fixed amount of time regardless of how many tokens are in the step, while the arithmetic on a handful of tokens is tiny by comparison. so in this regime, adding more tokens barely changes step time: the weights get loaded either way, and the extra tokens are almost free. in this regime, the overall compute time is dictated by loading weights, and hence adding more tokens or increasing batch size a little doesn't add much to total inference time.
 
 as tokens per step grow (a larger batch, or a longer prompt in prefill), each weight loaded from HBM is reused for more tokens. eventually the compute units become the bottleneck, and step time scales with FLOPs, which means it grows roughly linearly with the number of tokens. in terms of batch size, step latency is flat at first and linear later, while throughput (tokens per second) rises with batch size and then saturates. in this regime, the total inference time is dictated by the tokens in context - so adding more tokens or increasing batch size increases the total inference time (for a single step) linearly.
 
 in decode, the KV cache adds a second memory cost. unlike the weights, which are read once and shared by the whole batch, each sequence has its own cache, so the bytes read per step grow with batch size times context length. batching only amortizes the weight reads, not the cache reads. so at long contexts, step time keeps growing linearly with context length, and it can grow with batch size even before the weight matmuls become compute-bound. the cache reads can eventually dominate the step, which is why KV cache size often limits serving throughput, and why techniques like GQA, which shrink the cache, help so much. at longer context lengths, the overall time for both memory and compute is dictated by the sequence length / batch size.
+
+---
+
+## memory computations: will your workload fit on the gpu?
+
+before running a training or inference job, it is worth working out how much gpu memory it will need. memory is a hard constraint: if a job needs even slightly more than the gpu has, it fails with an out-of-memory error, often after it has already been queued or partly run. an estimate in advance tells you whether a model fits on one gpu or must be sharded across several, which batch sizes and sequence lengths are feasible, whether you need techniques like activation checkpointing, flash attention, or lower precision, and how much hardware to rent. it also shows where the memory goes, so you know which knob to turn when something does not fit. we start with training.
+
+### where training memory goes
+
+for training, the primary occupants of gpu memory are: weights, gradients, optimizer states, activations, and transient intermediates. let's break them down one by one.
+
+#### model weights
+
+the entire model takes up space. we'll use an architecture-agnostic transformer with N billion parameters. with mixed-precision training, we keep a bf16 copy of the model (used for the forward and backward passes) and an fp32 master copy (used for the updates). this is 2 + 4 = 6 bytes per parameter. a useful rule of thumb is that 1 billion bytes = 1 GB, so the model takes up `N * 6 GB`. that's a hefty start - on to the next component.
+
+#### gradients
+
+this one is simple: every parameter has an associated gradient, and gradients are often stored in full precision, so we need a further `N * 4 GB`. (some setups keep bf16 gradients, which would take `N * 2 GB` instead).
+
+#### optimizer states
+
+the memory needed for optimizer states depends on your choice of optimizer. adam, for example, stores two states per parameter: a first moment (momentum) and a second moment (variance), usually in full precision. this requires a further `2 * N * 4 = N * 8 GB`. together, weights, gradients, and optimizer states take about `N * 18 GB` (roughly 126 GB for a 7B model), regardless of batch size or sequence length. that's a sizeable chunk of your beloved gpu - but we're just getting started.
+
+#### activations
+
+this is where things get interesting and murky. mathematically, we need the intermediate activations to compute gradients. however, as we saw earlier in the gradient checkpointing section (a.k.a. activation checkpointing), it is possible to trade stored activations for extra recomputation. we'll discuss both cases here. assume a batch size b, sequence length s, number of layers l, vocab size v, model dimension d, head dimension d_head, hidden dimension d_hidden, and number of heads nh. we'll also use the simplifying assumptions d_head * nh = d and d_hidden = 4 * d.
+
+##### case 1: no activation checkpointing
+
+for each layer, we need to store whatever backward propagation needs. we don't need to save the inputs and outputs of literally every sub-component, but we can side-step the detailed derivation here and jump to the results.
+
+the saved values have two components: linear and quadratic in sequence length. the linear components per layer are the outputs of the two rms norms (2), the q/k/v projections (3), the attention output before the output projection (1), the two residual outputs (2), and the ffn hidden activation (4, since d_hidden = 4 * d). this sums to `b * s * d * (2 + 3 + 1 + 2 + 4) = 12 * b * s * d` values per layer. the quadratic component is the attention probabilities (the softmax output) for each head, which gives `b * nh * s^2` values per layer. finally, we need the logits, the output of the language-modeling head, which is `b * s * v` values.
+
+with mixed-precision training, we store the per-layer values in half precision (2 bytes), and we assume the logits are stored in full precision (4 bytes) for the loss computation. this gives a total of `l * (24 * b * s * d + 2 * b * nh * s^2) + 4 * b * s * v` bytes. (this ignores small terms such as the final rms norm buffers.)
+
+##### case 2: activation checkpointing and flash attention
+
+flash attention uses a fused kernel that computes the attention output tile by tile on-chip. the `b * nh * s^2` score matrix is therefore never stored in memory, and the scores are simply recomputed during the backward pass. (only a small per-row statistic is saved, which is negligible.) flash attention can be used on its own, which removes only the quadratic term and gives `l * 24 * b * s * d + 4 * b * s * v` bytes.
+
+adding activation checkpointing at each layer, we only need to save the input of each layer, which is `b * s * d` values (2 bytes each) per layer. the total saved is then `2 * l * b * s * d + 4 * b * s * v` bytes. at peak, while a layer is being recomputed during the backward pass, that layer's full activations (about `24 * b * s * d` bytes) are alive as well, on top of the saved checkpoints.
+
+#### transient intermediates
+
+these are the buffers that flow through the network during the backward pass, such as intermediate gradients (dX and so on), one layer's worth at a time, plus matmul workspaces. most of them are small compared to the saved activations. the main exception is the gradient of the logits: it has the same shape as the logits (`b * s * v`) and exists at the start of the backward pass while the logits are still alive. if the logits are in fp32, this can add another `4 * b * s * v` bytes, so for large vocabularies it is worth counting explicitly. beyond that, it is useful to keep a 5-10% buffer for the remaining intermediates, workspaces, and allocator fragmentation.
 
 ---
 
