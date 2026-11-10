@@ -18,3 +18,4 @@ This document outlines the core principles, architecture invariants, and working
   - **Justified body paragraphs**: `text-align: justify` for clean editorial columns.
   - **Footer attribution**: Include `darth-c0d3r` footer attributions.
   - **Typography**: Plus Jakarta Sans for body/headers and JetBrains Mono for code/metadata.
+  
