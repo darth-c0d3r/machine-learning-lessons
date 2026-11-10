@@ -808,7 +808,7 @@
             <p>these are the buffers that flow through the network during the backward pass, such as intermediate gradients (dX and so on), one layer's worth at a time, plus matmul workspaces. most of them are small compared to the saved activations. the main exception is the gradient of the logits: it has the same shape as the logits (<code>b * s * v</code>) and exists at the start of the backward pass while the logits are still alive. if the logits are in fp32, this can add another <code>4 * b * s * v</code> bytes, so for large vocabularies it is worth counting explicitly. beyond that, it is useful to keep a 5-10% buffer for the remaining intermediates, workspaces, and allocator fragmentation.</p>
 
             <h3 style="margin-top: 40px; text-transform: lowercase;">interactive training memory calculator</h3>
-            <p style="margin-bottom: 20px;">configure your model parameters, hyperparameters, and feature options below to calculate exact GPU memory consumption in gigabytes (GB) component-by-component.</p>
+            <p style="margin-bottom: 20px;">configure your model parameters, hyperparameters, and feature options below to calculate estimated GPU memory consumption in gigabytes (GB) component-by-component.</p>
 
             <div class="calc-container" style="background: #121216; border: 1px solid var(--border-subtle); padding: 24px; border-radius: 6px; margin-bottom: 32px;">
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px;">
@@ -941,13 +941,16 @@
                         actBytes = linActBytes + logitsBytes; // no quad component
                     } else if (actMode === 'checkpoint') {
                         // Saved checkpoints: 2 * L * b * s * d * 2 bytes + peak activation during recompute (~ linActBytes / L or full layer)
-                        actBytes = (2 * L * b * s * d * 2) + ((linActBytes / L) * 2) + logitsBytes;
+                        actBytes = (2 * L * b * s * d) + (linActBytes / L) + logitsBytes;
                     }
 
-                    // Transient intermediates & buffers (~ 5% of activation + weights or fixed buffer)
-                    let transientBytes = (weightBytes + gradBytes + actBytes) * 0.05;
+                    // Logit Gradients
+                    let logitsGradientBytes = logitsBytes
 
-                    const totalBytes = weightBytes + gradBytes + optBytes + actBytes + transientBytes;
+                    // Transient intermediates & buffers (~ 5% of activation + weights or fixed buffer)
+                    let transientBytes = (weightBytes + gradBytes + optBytes + actBytes + logitsGradientBytes) * 0.05;
+
+                    const totalBytes = weightBytes + gradBytes + optBytes + actBytes + logitsGradientBytes + transientBytes;
 
                     const toGB = (bytes) => (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' gb';
 
@@ -956,6 +959,7 @@
                         { name: 'gradients (' + gradMode + ')', val: toGB(gradBytes) },
                         { name: 'optimizer states (' + optMode + ')', val: toGB(optBytes) },
                         { name: 'activations (' + actMode + ')', val: toGB(actBytes) },
+                        { name: 'logits gradients (transient)', val: toGB(logitsGradientBytes) },
                         { name: 'transient intermediates & buffer (5%)', val: toGB(transientBytes) },
                         { name: 'total gpu memory required', val: toGB(totalBytes), highlight: true }
                     ];
@@ -977,7 +981,197 @@
                 // Initial calculation run
                 updateMemoryCalc();
             </script>
+
+            <h3 style="margin-top: 48px; text-transform: lowercase;">where inference memory goes</h3>
+            <p>next up, we have a relatively simpler task of accounting for inference-time memory. here, we have no gradients and no optimizer states, and we don't need to keep activations around for backpropagation: we load the model and run the forward pass. however, unlike training, where the whole sequence is processed at once, generation is auto-regressive, so we store a kv cache to avoid recomputing the keys and values of past tokens. the components affecting inference memory are: model weights, the key-value cache, and transient intermediates (plus a little overhead). let's take a closer look at each of these.</p>
+
+            <h4>model weights</h4>
+            <p>things are simple here: we load the entire model, and the memory it needs depends on the data type. a full-precision float32 model needs <code>4 * N GB</code>, a half-precision (bf16/fp16) model needs <code>2 * N GB</code>, an int8 or fp8 model needs <code>N GB</code>, and a 4-bit model needs <code>0.5 * N GB</code> (using 1 GB = 10<sup>9</sup> bytes). quantization also stores scales and zero points, which adds a few percent. an aside to keep in mind: not all layers are loaded in their most compressed form even when quantizing. layers like the language modeling head, the embeddings, or sometimes the attention parameters continue to use higher-precision representations. for this exercise, we'll assume the entire model is quantized, but in practice this is something to keep an eye on. also note that unlike training, there is no fp32 master copy: inference loads a single copy of the weights.</p>
+
+            <h4>kv cache</h4>
+            <p>kv cache optimization has been the cornerstone of several inference improvements lately, including grouped-query attention, multi-head latent attention, and kv cache quantization, and we'll soon see why. assume vanilla multi-head attention. for a batch size b and total context length s (prompt plus generated tokens), we store 2 tensors (key and value) per token, per layer, per head, which gives <code>2 * b * s * l * nh * d_head</code> values. using our simplifying assumption d_head * nh = d, this becomes <code>2 * b * s * l * d</code> values. multiply by the bytes per element of the cache dtype to get memory. note that the cache dtype is set separately from the weight dtype: a quantized model usually still keeps a bf16 cache unless kv cache quantization is enabled.</p>
+            <p>as a sanity check, take a 7B mha model (l = 32, d = 4096) with a bf16 cache. that is <code>2 * 32 * 4096 * 2</code> bytes, about 0.5 MB per token. one sequence at 4k context needs about 2.1 GB, and a batch of 32 such sequences needs about 69 GB, far more than the 14 GB of bf16 weights. the cache scales linearly with both batch size and sequence length, so for long contexts or large batches it can blow up quickly, and it is usually the term that decides the maximum batch size and context length for a given gpu.</p>
+            <p>this is where grouped-query attention comes in. let n_kv be the number of key-value heads, with each kv head shared by nh / n_kv query heads. the cache becomes <code>2 * b * s * l * n_kv * d_head</code> values, a reduction of <code>nh / n_kv</code> compared to mha. multi-query attention is the extreme case n_kv = 1. multi-head latent attention takes a different route: instead of storing fewer heads, it caches a compressed latent vector per token and reconstructs the keys and values from it.</p>
+
+            <h4>transient intermediates</h4>
+            <p>besides the weights and the cache, inference needs buffers for the intermediate results passed between sub-components. unlike training, nothing is saved across layers, so only about one layer's worth of buffers is alive at a time. the main candidates are:</p>
+            <ul>
+                <li><strong>attention scores:</strong> a vanilla implementation materializes <code>b * nh * s<sup>2</sup></code> scores for a layer during prefill. with flash attention, the scores are computed tile by tile on-chip and never stored, so we assume this term is gone.</li>
+                <li><strong>ffn hidden activations:</strong> during prefill, the ffn hidden tensor has <code>b * s * d_hidden</code> elements. for example, 32k prompt tokens with d_hidden = 16k in bf16 is about 1 GB. with flash attention, this is typically the largest transient in prefill. serving systems often chunk the prefill to bound it.</li>
+                <li><strong>final logits:</strong> we only need the logits of the last position to sample the next token, so this is <code>b * v</code> values. in fp32 that is <code>b * v * 4</code> bytes, only about 16 MB for b = 32 and v = 128k, which is tiny. computing logits at every prompt position would instead cost <code>b * s * v</code> and can be large.</li>
+            </ul>
+            <p>these buffers are not all alive at the same time (the ffn hidden tensor exists inside a layer, the logits at the very end), so the peak is governed by whichever is larger. in decode, with a single token per sequence, all of them are small. also, even when the weights are quantized, the intermediate computations usually run in bf16 or fp32. this holds for weight-only quantization, the common case. schemes that also quantize activations (such as w8a8 or fp8) can keep activations in low precision, though accumulation still happens in a higher data type.</p>
+
+            <h4>overhead</h4>
+            <p>finally, add some headroom for the cuda context, matmul and kernel workspaces, and allocator fragmentation, typically 5-15% on top. paged kv allocation, as used in vllm, reduces the fragmentation part for the cache.</p>
+
+            <h4>putting it together</h4>
+            <p style="font-family: 'JetBrains Mono'; font-size: 0.9em; background: #121216; padding: 12px 16px; border-left: 2px solid var(--accent); border-radius: 4px; margin: 16px 0;">inference memory &approx; weights + kv cache + transient intermediates + overhead</p>
+            <p>the weights are fixed by the model and its precision, the kv cache grows with <code>b * s</code>, and the transients and overhead are comparatively small. so a quick way to size a deployment is to subtract the weights and overhead from the gpu memory and see how many tokens of kv cache (batch size times context length) fit in what is left.</p>
+
+            <h3 style="margin-top: 40px; text-transform: lowercase;">interactive inference memory calculator</h3>
+            <p style="margin-bottom: 20px;">configure your inference parameters below to calculate estimated GPU memory consumption in gigabytes (GB) component-by-component (weights, kv cache, prefill hidden state transient, and overhead).</p>
+
+            <div class="calc-container" id="inf-calc-container" style="background: #121216; border: 1px solid var(--border-subtle); padding: 24px; border-radius: 6px; margin-bottom: 32px;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px;">
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">model params (N in billions)</label>
+                        <input type="number" id="inf-calc-n" value="7" step="0.1" min="0.1" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.9em; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">model dimension (d)</label>
+                        <input type="number" id="inf-calc-d" value="4096" step="128" min="256" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.9em; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">number of layers (L)</label>
+                        <input type="number" id="inf-calc-l" value="32" step="1" min="1" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.9em; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">number of heads (nh)</label>
+                        <input type="number" id="inf-calc-nh" value="32" step="1" min="1" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.9em; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">batch size (b)</label>
+                        <input type="number" id="inf-calc-b" value="32" step="1" min="1" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.9em; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">context length (s)</label>
+                        <input type="number" id="inf-calc-s" value="4096" step="128" min="64" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.9em; border-radius: 4px;">
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">hidden dimension (d_hidden)</label>
+                        <input type="number" id="inf-calc-dhidden" value="16384" step="512" min="512" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.9em; border-radius: 4px;">
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; border-top: 1px solid var(--border-subtle); padding-top: 20px; margin-bottom: 24px;">
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">model data type (weights)</label>
+                        <select id="inf-calc-weight-dtype" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.85em; border-radius: 4px;">
+                            <option value="fp32">float32 (4 bytes / param)</option>
+                            <option value="bf16" selected>bfloat16 / float16 (2 bytes / param)</option>
+                            <option value="int8">int8 quantized (1 byte / param)</option>
+                            <option value="int4">4-bit quantized (0.5 bytes / param)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">kv cache data type</label>
+                        <select id="inf-calc-kv-dtype" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.85em; border-radius: 4px;">
+                            <option value="fp32">float32 (4 bytes / element)</option>
+                            <option value="bf16" selected>bfloat16 / float16 (2 bytes / element)</option>
+                            <option value="int8">int8 kv cache (1 byte / element)</option>
+                            <option value="int4">4-bit kv cache (0.5 bytes / element)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="display: block; font-family: 'JetBrains Mono'; font-size: 0.8em; color: var(--text-secondary); margin-bottom: 6px;">kv cache architecture type</label>
+                        <select id="inf-calc-kv-type" style="width: 100%; background: #09090b; border: 1px solid var(--border-subtle); color: #e4e4e7; padding: 8px; font-family: 'JetBrains Mono'; font-size: 0.85em; border-radius: 4px;">
+                            <option value="mha" selected>multi-head attention (MHA, n_kv = nh)</option>
+                            <option value="gqa4">grouped-query attention (GQA, n_kv = nh / 4)</option>
+                            <option value="gqa8">grouped-query attention (GQA, n_kv = nh / 8)</option>
+                            <option value="mqa">multi-query attention (MQA, n_kv = 1)</option>
+                            <option value="mhla">multi-head latent attention (MHLA, 4x single latent)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="data-table" style="margin: 0;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width: 60%;">component</th>
+                                <th style="width: 40%; text-align: right;">total memory</th>
+                            </tr>
+                        </thead>
+                        <tbody id="inf-calc-results-tbody">
+                            <!-- populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <script>
+                function updateInferenceMemoryCalc() {
+                    const N = parseFloat(document.getElementById('inf-calc-n').value) || 0; // billions
+                    const d = parseFloat(document.getElementById('inf-calc-d').value) || 0;
+                    const L = parseFloat(document.getElementById('inf-calc-l').value) || 0;
+                    const nh = parseFloat(document.getElementById('inf-calc-nh').value) || 0;
+                    const b = parseFloat(document.getElementById('inf-calc-b').value) || 0;
+                    const s = parseFloat(document.getElementById('inf-calc-s').value) || 0;
+                    const d_hidden = parseFloat(document.getElementById('inf-calc-dhidden').value) || 0;
+
+                    const weightDtype = document.getElementById('inf-calc-weight-dtype').value;
+                    const kvDtype = document.getElementById('inf-calc-kv-dtype').value;
+                    const kvType = document.getElementById('inf-calc-kv-type').value;
+
+                    const paramsBytes = N * 1e9;
+
+                    // 1. Model Weights
+                    let weightBytesPerParam = 2;
+                    if (weightDtype === 'fp32') weightBytesPerParam = 4;
+                    else if (weightDtype === 'bf16') weightBytesPerParam = 2;
+                    else if (weightDtype === 'int8') weightBytesPerParam = 1;
+                    else if (weightDtype === 'int4') weightBytesPerParam = 0.5;
+                    const weightBytes = paramsBytes * weightBytesPerParam;
+
+                    // 2. KV Cache
+                    // Values per layer = 2 (K and V) * b * s * n_kv * d_head
+                    // d_head = d / nh
+                    const d_head = nh > 0 ? (d / nh) : 128;
+                    let n_kv = nh;
+                    if (kvType === 'gqa4') n_kv = Math.max(1, nh / 4);
+                    else if (kvType === 'gqa8') n_kv = Math.max(1, nh / 8);
+                    else if (kvType === 'mqa') n_kv = 1;
+                    else if (kvType === 'mhla') n_kv = 0.5 * 4; // conceptual compression ratio (~4x single vector)
+                    // mhla: n_kv = 0.5 * r --> cancels the factor 2, giving a latent of r * d_head
+
+                    let kvBytesPerElement = 2;
+                    if (kvDtype === 'fp32') kvBytesPerElement = 4;
+                    else if (kvDtype === 'bf16') kvBytesPerElement = 2;
+                    else if (kvDtype === 'int8') kvBytesPerElement = 1;
+                    else if (kvDtype === 'int4') kvBytesPerElement = 0.5;
+
+                    const kvBytes = 2 * b * s * L * n_kv * d_head * kvBytesPerElement;
+
+                    // 3. Pre-fill hidden state transient (largest transient in prefill)
+                    // FFN hidden tensor activation during prefill: b * s * d_hidden * 2 bytes (bf16)
+                    const transientBytes = b * s * d_hidden * 2;
+
+                    // 4. Overhead (CUDA context, workspaces, allocator fragmentation ~ 10%)
+                    const overheadBytes = (weightBytes + kvBytes + transientBytes) * 0.10;
+
+                    const totalBytes = weightBytes + kvBytes + transientBytes + overheadBytes;
+
+                    const toGB = (bytes) => (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' gb';
+
+                    const rows = [
+                        { name: 'model weights (' + weightDtype + ')', val: toGB(weightBytes) },
+                        { name: 'kv cache (' + kvType + ', ' + kvDtype + ')', val: toGB(kvBytes) },
+                        { name: 'pre-fill hidden state transient (FFN activation)', val: toGB(transientBytes) },
+                        { name: 'overhead (workspace & fragmentation ~10%)', val: toGB(overheadBytes) },
+                        { name: 'total gpu inference memory', val: toGB(totalBytes), highlight: true }
+                    ];
+
+                    const tbody = document.getElementById('inf-calc-results-tbody');
+                    tbody.innerHTML = rows.map(r => `
+                        <tr class="static" ${r.highlight ? 'style="font-weight: bold; background: #18181b; color: #6366f1;"' : ''}>
+                            <td>${r.name}</td>
+                            <td style="text-align: right; font-family: 'JetBrains Mono';">${r.val}</td>
+                        </tr>
+                    `).join('');
+                }
+
+                document.querySelectorAll('#inf-calc-container input, #inf-calc-container select').forEach(el => {
+                    el.addEventListener('input', updateInferenceMemoryCalc);
+                    el.addEventListener('change', updateInferenceMemoryCalc);
+                });
+
+                // Initial calculation run
+                updateInferenceMemoryCalc();
+            </script>
         </section>
+
+        <hr class="divider">
 
         <footer>
             <span>transformer arithmetic & resource estimation</span>

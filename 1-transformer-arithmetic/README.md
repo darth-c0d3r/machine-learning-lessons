@@ -501,6 +501,42 @@ adding activation checkpointing at each layer, we only need to save the input of
 
 these are the buffers that flow through the network during the backward pass, such as intermediate gradients (dX and so on), one layer's worth at a time, plus matmul workspaces. most of them are small compared to the saved activations. the main exception is the gradient of the logits: it has the same shape as the logits (`b * s * v`) and exists at the start of the backward pass while the logits are still alive. if the logits are in fp32, this can add another `4 * b * s * v` bytes, so for large vocabularies it is worth counting explicitly. beyond that, it is useful to keep a 5-10% buffer for the remaining intermediates, workspaces, and allocator fragmentation.
 
+### where inference memory goes
+
+next up, we have a relatively simpler task of accounting for inference-time memory. here, we have no gradients and no optimizer states, and we don't need to keep activations around for backpropagation: we load the model and run the forward pass. however, unlike training, where the whole sequence is processed at once, generation is auto-regressive, so we store a kv cache to avoid recomputing the keys and values of past tokens. the components affecting inference memory are: model weights, the key-value cache, and transient intermediates (plus a little overhead). let's take a closer look at each of these.
+
+#### model weights
+
+things are simple here: we load the entire model, and the memory it needs depends on the data type. a full-precision float32 model needs `4 * N GB`, a half-precision (bf16/fp16) model needs `2 * N GB`, an int8 or fp8 model needs `N GB`, and a 4-bit model needs `0.5 * N GB` (using 1 GB = 10^9 bytes). quantization also stores scales and zero points, which adds a few percent. an aside to keep in mind: not all layers are loaded in their most compressed form even when quantizing. layers like the language modeling head, the embeddings, or sometimes the attention parameters continue to use higher-precision representations. for this exercise, we'll assume the entire model is quantized, but in practice this is something to keep an eye on. also note that unlike training, there is no fp32 master copy: inference loads a single copy of the weights.
+
+#### kv cache
+
+kv cache optimization has been the cornerstone of several inference improvements lately, including grouped-query attention, multi-head latent attention, and kv cache quantization, and we'll soon see why. assume vanilla multi-head attention. for a batch size b and total context length s (prompt plus generated tokens), we store 2 tensors (key and value) per token, per layer, per head, which gives `2 * b * s * l * nh * d_head` values. using our simplifying assumption d_head * nh = d, this becomes `2 * b * s * l * d` values. multiply by the bytes per element of the cache dtype to get memory. note that the cache dtype is set separately from the weight dtype: a quantized model usually still keeps a bf16 cache unless kv cache quantization is enabled.
+
+as a sanity check, take a 7B mha model (l = 32, d = 4096) with a bf16 cache. that is `2 * 32 * 4096 * 2` bytes, about 0.5 MB per token. one sequence at 4k context needs about 2.1 GB, and a batch of 32 such sequences needs about 69 GB, far more than the 14 GB of bf16 weights. the cache scales linearly with both batch size and sequence length, so for long contexts or large batches it can blow up quickly, and it is usually the term that decides the maximum batch size and context length for a given gpu.
+
+this is where grouped-query attention comes in. let n_kv be the number of key-value heads, with each kv head shared by nh / n_kv query heads. the cache becomes `2 * b * s * l * n_kv * d_head` values, a reduction of `nh / n_kv` compared to mha. multi-query attention is the extreme case n_kv = 1. multi-head latent attention takes a different route: instead of storing fewer heads, it caches a compressed latent vector per token and reconstructs the keys and values from it.
+
+#### transient intermediates
+
+besides the weights and the cache, inference needs buffers for the intermediate results passed between sub-components. unlike training, nothing is saved across layers, so only about one layer's worth of buffers is alive at a time. the main candidates are:
+
+- **attention scores:** a vanilla implementation materializes `b * nh * s^2` scores for a layer during prefill. with flash attention, the scores are computed tile by tile on-chip and never stored, so we assume this term is gone.
+- **ffn hidden activations:** during prefill, the ffn hidden tensor has `b * s * d_hidden` elements. for example, 32k prompt tokens with d_hidden = 16k in bf16 is about 1 GB. with flash attention, this is typically the largest transient in prefill. serving systems often chunk the prefill to bound it.
+- **final logits:** we only need the logits of the last position to sample the next token, so this is `b * v` values. in fp32 that is `b * v * 4` bytes, only about 16 MB for b = 32 and v = 128k, which is tiny. computing logits at every prompt position would instead cost `b * s * v` and can be large.
+
+these buffers are not all alive at the same time (the ffn hidden tensor exists inside a layer, the logits at the very end), so the peak is governed by whichever is larger. in decode, with a single token per sequence, all of them are small. also, even when the weights are quantized, the intermediate computations usually run in bf16 or fp32. this holds for weight-only quantization, the common case. schemes that also quantize activations (such as w8a8 or fp8) can keep activations in low precision, though accumulation still happens in a higher data type.
+
+#### overhead
+
+finally, add some headroom for the cuda context, matmul and kernel workspaces, and allocator fragmentation, typically 5-15% on top. paged kv allocation, as used in vllm, reduces the fragmentation part for the cache.
+
+#### putting it together
+
+`inference memory ~= weights + kv cache + transient intermediates + overhead`
+
+the weights are fixed by the model and its precision, the kv cache grows with `b * s`, and the transients and overhead are comparatively small. so a quick way to size a deployment is to subtract the weights and overhead from the gpu memory and see how many tokens of kv cache (batch size times context length) fit in what is left.
+
 ---
 
 transformer arithmetic & resource estimation — darth-c0d3r
