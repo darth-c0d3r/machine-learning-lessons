@@ -539,4 +539,13 @@ the weights are fixed by the model and its precision, the kv cache grows with `b
 
 ---
 
+## useful references
+
+1. [CS336 (2025) | Stanford | Lecture 2: PyTorch & Resource Accounting (Lecture Video)](https://www.youtube.com/watch?v=msHyYioAyNE&list=PLoROMvodv4rOY23Y0BoGoBGgQ1zmU_MT_&index=2)
+2. [CS336 (2025) | Stanford | Lecture 2: PyTorch & Resource Accounting (Lecture Notes)](https://cs336.stanford.edu/spring2025-lectures/?trace=var/traces/lecture_02.json)
+3. [LLM Parameter Counting, kipply's blog](https://kipp.ly/p/transformer-param-count)
+4. [Transformer Inference Arithmetic, kipply's blog](https://kipp.ly/p/transformer-inference-arithmetic)
+
+---
+
 transformer arithmetic & resource estimation — darth-c0d3r

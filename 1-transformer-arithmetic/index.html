@@ -63,6 +63,16 @@
             opacity: 0.8;
         }
 
+        a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        a:hover {
+            opacity: 0.8;
+            text-decoration: underline;
+        }
+
         header {
             margin-bottom: 48px;
             padding-bottom: 24px;
@@ -1169,6 +1179,18 @@
                 // Initial calculation run
                 updateInferenceMemoryCalc();
             </script>
+        </section>
+
+        <hr class="divider">
+
+        <section>
+            <h3>useful references</h3>
+            <ol>
+                <li><a href="https://www.youtube.com/watch?v=msHyYioAyNE&list=PLoROMvodv4rOY23Y0BoGoBGgQ1zmU_MT_&index=2" target="_blank" rel="noopener">CS336 (2025) | Stanford | Lecture 2: PyTorch & Resource Accounting (Lecture Video)</a></li>
+                <li><a href="https://cs336.stanford.edu/spring2025-lectures/?trace=var/traces/lecture_02.json" target="_blank" rel="noopener">CS336 (2025) | Stanford | Lecture 2: PyTorch & Resource Accounting (Lecture Notes)</a></li>
+                <li><a href="https://kipp.ly/p/transformer-param-count" target="_blank" rel="noopener">LLM Parameter Counting, kipply's blog</a></li>
+                <li><a href="https://kipp.ly/p/transformer-inference-arithmetic" target="_blank" rel="noopener">Transformer Inference Arithmetic, kipply's blog</a></li>
+            </ol>
         </section>
 
         <hr class="divider">
