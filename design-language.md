@@ -11,7 +11,7 @@ This document defines our renewed design philosophy. **Minimalism does not mean 
 * **Structural Flow (No Raised Center Platforms)**: Content flows naturally down an edge-to-edge or wide column layout without artificial bordered container boxes. Section transitions rely on generous whitespace, subtle typographic contrast, and hairline dividers (`rgba(255, 255, 255, 0.08)`).
 * **Justified Body Text**: Paragraph text is styled with `text-align: justify` to create clean, block-aligned editorial columns.
 * **Editorial Typography**: A pairing of an ultra-crisp geometric sans-serif for headings with a refined monospace for code and metadata.
-* **Tactile Accents**: Restrained, glowing color accents (such as electric indigo `#6366f1`) used exclusively to highlight interactive elements, active states, and focal points.
+* **Tactile Accents**: Restrained, glowing color accents (such as terminal green `#22c55e`) used exclusively to highlight interactive elements, active states, and focal points.
 
 ---
 
@@ -24,8 +24,8 @@ This document defines our renewed design philosophy. **Minimalism does not mean 
 | `--border-subtle` | `rgba(255, 255, 255, 0.08)` | Hairline borders, structural dividers |
 | `--text-primary` | `#fafafa` | Headings, primary body text (Zinc 50) |
 | `--text-secondary` | `#a1a1aa` | Subtitles, captions, metadata (Zinc 400) |
-| `--accent` | `#6366f1` | Primary interactive / focus (Indigo 500) |
-| `--accent-glow` | `rgba(99, 102, 241, 0.15)` | Subtle focus rings, active highlights |
+| `--accent` | `#22c55e` | Primary interactive / focus (Green 500) |
+| `--accent-glow` | `rgba(34, 197, 94, 0.15)` | Subtle focus rings, active highlights |
 
 ---
 
@@ -43,4 +43,4 @@ This document defines our renewed design philosophy. **Minimalism does not mean 
 ## 4. Reading Progress Bar
 
 * **Behavior & Placement**: A pinned, ultra-fine indicator (`height: 2px`) fixed at the very top of the viewport (`position: fixed; top: 0; left: 0; width: 100%; z-index: 1000;`) that tracks scroll progress from 0% at the top to 100% when scrolling finishes.
-* **Styling**: Utilizes the primary theme accent color (`--accent`, `#6366f1`) with a subtle glow, smoothly scaling width based on `window.scrollY / (document.documentElement.scrollHeight - window.innerHeight)`.
+* **Styling**: Utilizes the primary theme accent color (`--accent`, `#22c55e`) with a subtle glow, smoothly scaling width based on `window.scrollY / (document.documentElement.scrollHeight - window.innerHeight)`.

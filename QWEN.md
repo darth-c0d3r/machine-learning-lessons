@@ -12,7 +12,7 @@ This document outlines the core principles, architecture invariants, and working
 ## Design Language Compliance
 - All interactive HTML lesson pages **must** strictly adhere to the global design language specified in `design-language.md`.
 - Key requirements include:
-  - **Dark-mode-first editorial aesthetic**: Deep obsidian backgrounds (`#09090b`), high contrast, and restrained accents (`#6366f1`).
+  - **Dark-mode-first editorial aesthetic**: Deep obsidian backgrounds (`#09090b`), high contrast, and restrained accents (`#22c55e`).
   - **Structural flow**: Edge-to-edge layout without raised container cards ("card-in-a-box").
   - **Lowercase aesthetic**: Headings, subtitles, and labels should use lowercase lettering for a modern technical tone.
   - **Justified body paragraphs**: `text-align: justify` for clean editorial columns.
