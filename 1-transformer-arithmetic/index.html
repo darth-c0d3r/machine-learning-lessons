@@ -217,9 +217,23 @@
             align-items: center;
             text-transform: lowercase;
         }
+
+        /* Reading Progress Bar */
+        .reading-progress {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 0%;
+            height: 2px;
+            background-color: var(--accent);
+            box-shadow: 0 0 8px var(--accent-glow);
+            z-index: 1000;
+            transition: width 0.1s ease-out;
+        }
     </style>
 </head>
 <body>
+    <div class="reading-progress" id="readingProgress"></div>
     <div class="layout">
         <header>
             <a href="../index.html" class="back-link">&larr; back to lessons</a>
@@ -1200,5 +1214,15 @@
             <span>darth-c0d3r</span>
         </footer>
     </div>
+
+    <script>
+        // Reading Progress Bar Logic
+        window.addEventListener('scroll', () => {
+            const winScroll = window.scrollY;
+            const height = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+            const scrolled = height > 0 ? (winScroll / height) * 100 : 0;
+            document.getElementById('readingProgress').style.width = scrolled + '%';
+        });
+    </script>
 </body>
 </html>

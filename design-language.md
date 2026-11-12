@@ -37,3 +37,10 @@ This document defines our renewed design philosophy. **Minimalism does not mean 
 * **Scale & Alignment**:
   * **Body (`<p>`)**: `text-align: justify`, line-height `1.7`.
   * **Lowercase convention**: Headings and UI text embrace lowercase formatting for a modern technical feel.
+
+---
+
+## 4. Reading Progress Bar
+
+* **Behavior & Placement**: A pinned, ultra-fine indicator (`height: 2px`) fixed at the very top of the viewport (`position: fixed; top: 0; left: 0; width: 100%; z-index: 1000;`) that tracks scroll progress from 0% at the top to 100% when scrolling finishes.
+* **Styling**: Utilizes the primary theme accent color (`--accent`, `#6366f1`) with a subtle glow, smoothly scaling width based on `window.scrollY / (document.documentElement.scrollHeight - window.innerHeight)`.
