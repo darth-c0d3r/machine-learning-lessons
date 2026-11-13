@@ -719,6 +719,8 @@
                 <li><strong>contrast, $l_2 \gg l_1$:</strong> tpot grows with $l_2$ as the cache fills, and the cumulative decode cost becomes quadratic in generated tokens.</li>
             </ul>
 
+            <p style="margin-top: 16px;">at smaller sequence lengths, the overall flops for generation are dominated by the weight matmuls (ffn and qkvo), hence the <em>s &middot; d<sup>2</sup></em> term, whereas as the sequence length grows, the flops start getting dominated by the attention score computation, represented by the <em>d &middot; s<sup>2</sup></em> term.</p>
+
             <style>
                 .data-table { overflow-x: auto; margin: 24px 0; }
                 table { width: 100%; border-collapse: collapse; font-family: 'JetBrains Mono'; font-size: 0.85em; }

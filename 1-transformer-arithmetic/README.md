@@ -377,6 +377,8 @@ The 20 · b · s · d_model linear term is RoPE (6) + ReLU (4) + norms and resid
 - **TTFT (prefill, $s$ tokens):** $O(s \, d_{\text{model}}^2 + s^2 \, d_{\text{model}})$. roughly linear in prompt length while $s$ is small relative to $d_{\text{model}}$ (ffn and projections dominate), turning quadratic once $s$ exceeds about $6 \, d_{\text{model}}$ (self-attention dominates).
 - **TPOT (decode, $l_2$-th token):** $O(d_{\text{model}}^2 + (s + l_2) d_{\text{model}})$. flat at short context, then linear in context length once $s + l_2$ exceeds about $6 \, d_{\text{model}}$.
 
+at smaller sequence lengths, the overall flops for generation are diminated by the weight matmuls (ffn and qkvo), hence the `s * d^2` term, whereas as the sequence length grows, the flops start getting dominated by the attention score computation, represented by the `d * s^2` term.
+
 ---
 
 ### conclusion: How cost scales with length
