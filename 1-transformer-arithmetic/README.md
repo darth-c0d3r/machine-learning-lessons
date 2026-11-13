@@ -539,6 +539,36 @@ the weights are fixed by the model and its precision, the kv cache grows with `b
 
 ---
 
+## a closing puzzle: deeper vs. wider transformers
+
+*same model size, different config*: how would you argue about the comparison of inference latencies of two models that have the same number of parameters, but one has more layers than the other? model A has more depth (higher _l_), while model B, with fewer layers, has more width (higher _d_) to compensate for the reduced layers and keep the parameter count the same. to keep the analysis simple, we'll ignore the language modeling head and look only at the core transformer. we'll also assume standard multi-head attention.
+
+### intuitive answer
+
+intuitively, it makes sense to guess that the deeper model has higher latency, because layers are processed sequentially while the matrix multiplications are parallelized on a gpu (or any hardware accelerator). when we reduce d, the matrix multiplications get smaller, but the impact should be limited because that work is parallel, and the increased number of layers should outweigh the reduced computation per layer. so we expect model A to have higher latency. let's see if this holds up under more rigorous reasoning.
+
+### rigorous answer
+
+first, let's quantify the problem. say model A has _k_ times as many layers as model B. because we want the number of parameters (_N_) to be the same, and _N_ scales with _l * d^2_, the model dimension of model B is $\sqrt{k}$ times that of model A (the wider model is B). we'll analyze two latencies: time to first token (ttft) and time per output token (tpot). the former is driven by the prefill stage, the latter by the decode stage. in general, the prefill stage is compute-bound, while the decode stage is memory-i/o-bound. also remember that at shorter sequence lengths, latency is driven more by model-weight i/o, while at longer sequence lengths, the flops and the kv cache i/o drive latency. with this in mind, let's start the analysis.
+
+#### time to first token (ttft)
+
+the number of flops in the prefill stage, for sequence length _s_, scales as $O(l * (s * d^2 + d * s^2))$. we know that _l * d^2_ is the same for both models, so the point of difference is the _l * d * s^2_ term (the attention core), which starts to dominate at higher sequence lengths. this term is higher for the deeper model (A) by a factor of $\sqrt{k}$, so A's total flops are higher by a factor between 1 and $\sqrt{k}$, approaching $\sqrt{k}$ as the sequence length grows. at shorter sequence lengths, when the overall flops are lower, latency is largely bound by model-weight i/o, which is the same for both models. so ttft will be higher for model A, and the gap becomes more apparent as the sequence length grows.
+
+#### time per output token (tpot)
+
+decode is memory-bound, so tpot is set mainly by the bytes read per step: the model weights plus the kv cache. the weight bytes are the same for both models. the kv cache scales with _l * d_, so it is larger for model A by a factor of $\sqrt{k}$. at short sequence lengths, the weight i/o dominates and the two models are close. as the sequence length grows, the kv cache i/o starts dominating, and tpot for A approaches $\sqrt{k}$ times that of B. the flops follow the same pattern: the weight matmuls scale with _l * d^2_ and are equal, while the attention flops, which scale with _l * d * s_, are higher for A. since decode is memory-bound, this is a secondary effect.
+
+#### per-layer overheads
+
+the analysis so far counts flops and bytes, but not the fixed cost of each layer. every layer launches its own set of kernels and synchronizes with the next, and with tensor parallelism it also adds a couple of all-reduces. these costs scale with _l_ alone (a factor of _k_ for model A), and they don't shrink with sequence length. they matter most in decode at short sequence lengths, where a step takes only a few milliseconds and the weight i/o is the same for both models. this is the sequential-depth effect from our intuitive answer, and it makes A slower even where the flop and byte counts are equal. (smaller matrix multiplications also use the hardware less efficiently, which adds to the same effect.)
+
+### conclusion
+
+the intuitive answer holds up. at the same parameter count, the deeper model is expected to be slower in both stages. at short sequence lengths, the gap comes mainly from per-layer overheads. as sequence length grows, the attention flops and kv cache i/o add a gap that approaches a factor of $\sqrt{k}$. note that the kv cache argument assumes multi-head attention; with grouped-query attention, the cache scales with _l * n_kv * d_head_, so the factor depends on how the number of kv heads changes with width.
+
+---
+
 ## useful references
 
 1. [CS336 (2025) | Stanford | Lecture 2: PyTorch & Resource Accounting (Lecture Video)](https://www.youtube.com/watch?v=msHyYioAyNE&list=PLoROMvodv4rOY23Y0BoGoBGgQ1zmU_MT_&index=2)
