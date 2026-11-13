@@ -44,3 +44,9 @@ This document defines our renewed design philosophy. **Minimalism does not mean 
 
 * **Behavior & Placement**: A pinned, ultra-fine indicator (`height: 2px`) fixed at the very top of the viewport (`position: fixed; top: 0; left: 0; width: 100%; z-index: 1000;`) that tracks scroll progress from 0% at the top to 100% when scrolling finishes.
 * **Styling**: Utilizes the primary theme accent color (`--accent`, `#22c55e`) with a subtle glow, smoothly scaling width based on `window.scrollY / (document.documentElement.scrollHeight - window.innerHeight)`.
+
+---
+
+## 5. Browser Tab Logo
+
+* **Constant Motif**: All lesson and index HTML pages feature the whimsical mushroom logo (`🍄`) at the beginning of their `<title>` tag for instant visual identification and character across browser tabs.
