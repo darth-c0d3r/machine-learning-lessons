@@ -225,7 +225,7 @@
         <section>
             <h2>gpu communication</h2>
 
-            <p>a distributed setup, where the model weights and intermediate results are scattered across devices, will require them to communicate and coordinate. how the data moves and its throughput depends on the connections between those devices: are they connected via high bandwidth nv-links, or do they communicate over a network? similarly, the connection topology also impacts the throughput by dictating which paths exist and how contended they are: are the gpus linked through the host cpu, directly point-to-point, or through an nvswitch that gives full-bandwidth any-to-any connectivity?</p>
+            <p>a distributed setup, where the model weights and intermediate results are scattered across devices, will require them to communicate and coordinate. how the data moves and its throughput depends on the connections between those devices: are they connected via high bandwidth nv-links, or do they communicate over a network? similarly, the connection topology also impacts the throughput by dictating which paths exist and how contended they are: are the gpus linked through the host cpu, directly point-to-point, or through an nv-switch that gives full-bandwidth any-to-any connectivity?</p>
 
             <p>understanding the hardware connections in depth, however, is a topic for another day, and frankly not my area of expertise (yet). in this section, we're going to discuss the api-level functions exposed by libraries like nccl for inter-device communication. these primitives are agnostic to the underlying hardware topology and are universally available. however, the knowledge of the hardware topology remains crucial to make decisions on choosing the parallelism strategy, and to understand the bottlenecks that can hurt our system's performance.</p>
 
@@ -234,7 +234,7 @@
             <p>a communication primitive is a basic operation for moving data between devices, with precisely defined semantics: who holds what before, and who holds what after. they come in two kinds: point-to-point operations between a pair of gpus, and collectives, where a whole group of gpus participates together. every parallelism strategy we’ll look at is built out of these, so it’s worth getting comfortable with them before moving on.</p>
 
             <p style="font-size: 0.85rem; font-style: italic; color: var(--text-secondary); margin-top: 16px;">
-                note: the visualized data flows for these communication primitives represent the high-level logical transformations and device synchronization states. they are abstract representations and do not reflect the lower-level hardware-specific implementations (e.g., specific ring-based transfer protocols or nvswitch-level routing) that govern actual performance at the hardware layer.
+                note: the visualized data flows for these communication primitives represent the high-level logical transformations and device synchronization states. they are abstract representations and do not reflect the lower-level hardware-specific implementations (e.g., specific ring-based transfer protocols or nv-switch-level routing) that govern actual performance at the hardware layer.
             </p>
 
             <h4>send / recv</h4>
