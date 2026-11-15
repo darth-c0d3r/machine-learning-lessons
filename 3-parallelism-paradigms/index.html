@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>n distributed training & inference paradigms</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🍄</text></svg>">
+    <!-- Google Fonts: Plus Jakarta Sans & JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- KaTeX for Math Rendering -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js" onload="renderMathInElement(document.body, { delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}] });"></script>
+    <style>
+        :root {
+            --bg-base: #09090b;
+            --bg-surface: #121216;
+            --border-subtle: rgba(255, 255, 255, 0.08);
+            --text-primary: #fafafa;
+            --text-secondary: #a1a1aa;
+            --accent: #22c55e;
+            --accent-glow: rgba(34, 197, 94, 0.15);
+            --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: var(--font-sans);
+            background-color: var(--bg-base);
+            color: var(--text-primary);
+            line-height: 1.7;
+            padding: 80px 24px;
+        }
+
+        .layout {
+            max-width: 760px;
+            margin: 0 auto;
+        }
+
+        .back-link {
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--accent);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 32px;
+            transition: opacity 0.2s;
+        }
+
+        .back-link:hover {
+            opacity: 0.8;
+            text-decoration: underline;
+        }
+
+        a {
+            color: var(--accent);
+            text-decoration: none;
+        }
+
+        a:hover {
+            opacity: 0.8;
+            text-decoration: underline;
+        }
+
+        header {
+            margin-bottom: 48px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        h1 {
+            font-size: 2.25rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            line-height: 1.15;
+            margin-bottom: 12px;
+            text-transform: lowercase;
+        }
+
+        section {
+            margin-bottom: 48px;
+        }
+
+        h2 {
+            font-size: 1.35rem;
+            font-weight: 600;
+            letter-spacing: -0.02em;
+            margin-bottom: 20px;
+            margin-top: 40px;
+            text-transform: lowercase;
+            color: var(--text-primary);
+            border-bottom: 1px solid var(--border-subtle);
+            padding-bottom: 8px;
+        }
+
+        h3 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            letter-spacing: -0.01em;
+            margin-bottom: 16px;
+            margin-top: 32px;
+            text-transform: lowercase;
+            color: var(--text-primary);
+        }
+
+        h4 {
+            font-size: 0.95rem;
+            font-weight: 600;
+            margin-bottom: 12px;
+            margin-top: 24px;
+            text-transform: lowercase;
+            color: var(--text-secondary);
+        }
+
+        p {
+            font-size: 0.95rem;
+            color: var(--text-secondary);
+            margin-bottom: 20px;
+            text-align: justify;
+        }
+
+        p strong, p b {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        code {
+            font-family: var(--font-mono);
+            font-size: 0.9em;
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: var(--text-primary);
+        }
+
+        ul, ol {
+            margin-bottom: 20px;
+            padding-left: 24px;
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+
+        li {
+            margin-bottom: 8px;
+            text-align: justify;
+        }
+
+        li strong {
+            color: var(--text-primary);
+        }
+
+        hr.divider {
+            border: none;
+            height: 1px;
+            background-color: var(--border-subtle);
+            margin: 48px 0;
+        }
+
+        footer {
+            margin-top: 64px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border-subtle);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            text-transform: lowercase;
+        }
+
+        /* Reading Progress Bar */
+        .progress-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background: transparent;
+            z-index: 1000;
+        }
+
+        .progress-bar {
+            height: 2px;
+            background: var(--accent);
+            width: 0%;
+            box-shadow: 0 0 10px var(--accent);
+            transition: width 0.1s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <div class="progress-container">
+        <div class="progress-bar" id="readingProgress"></div>
+    </div>
+
+    <div class="layout">
+        <a href="../index.html" class="back-link">&larr; back to lessons</a>
+
+        <header>
+            <h1>on distributed training & inference paradigms</h1>
+        </header>
+
+        <section>
+            <h2>overview</h2>
+
+            <p>deep learning models have gotten progressively larger over the last decade. with the proliferation of large language models, making efficient use of hardware is more important than ever for optimising cost, and in many cases, even getting things to run. for large models, you can't simply download the weights and start inference / training on your gpu without worrying about their memory footprint. a couple of days ago, thinking machines released their latest multi-modal model Inkling-2-Small: the small in the title had me excited for a moment. all the excitement came crashing down when i saw the parameter count - 594B (!!!). at half precision (bf16), this model would be 1.2 TB. a single h100 gpu has "only" 80 GB HBM - you'd need at least 15 of these just to hold the weights. the practical way to start using the modern frontier-scale models is through distributed multi-gpu setups, which will be the focus of our discussion.</p>
+
+            <p>this article takes a theoretical and technical approach - we'll define the formal framework for gpu communication, look at various paradigms for distributing a model across gpu nodes and clusters, and examine what kind of distributed setup works best under different conditions and requirements.</p>
+        </section>
+
+        <hr class="divider">
+
+        <section>
+            <h2>gpu communication</h2>
+
+            <p>a distributed setup, where the model weights and intermediate results are scattered across devices, will require them to communicate and coordinate. how the data moves and its throughput depends on the connections between those devices: are they connected via high bandwidth nv-links, or do they communicate over a network? similarly, the connection topology also impacts the throughput by dictating which paths exist and how contended they are: are the gpus linked through the host cpu, directly point-to-point, or through an nvswitch that gives full-bandwidth any-to-any connectivity?</p>
+
+            <p>understanding the hardware connections in depth, however, is a topic for another day, and frankly not my area of expertise (yet). in this section, we're going to discuss the api-level functions exposed by libraries like nccl for inter-device communication. these primitives are agnostic to the underlying hardware topology and are universally available. however, the knowledge of the hardware topology remains crucial to make decisions on choosing the parallelism strategy, and to understand the bottlenecks that can hurt our system's performance.</p>
+
+            <h3>communication primitives</h3>
+
+            <p>a communication primitive is a basic operation for moving data between devices, with precisely defined semantics: who holds what before, and who holds what after. they come in two kinds: point-to-point operations between a pair of gpus, and collectives, where a whole group of gpus participates together. every parallelism strategy we’ll look at is built out of these, so it’s worth getting comfortable with them before moving on.</p>
+
+            <p style="font-size: 0.85rem; font-style: italic; color: var(--text-secondary); margin-top: 16px;">
+                note: the visualized data flows for these communication primitives represent the high-level logical transformations and device synchronization states. they are abstract representations and do not reflect the lower-level hardware-specific implementations (e.g., specific ring-based transfer protocols or nvswitch-level routing) that govern actual performance at the hardware layer.
+            </p>
+
+            <h4>send / recv</h4>
+            <p>send / recv is the simplest primitive: one gpu copies a tensor into the memory of another. the sender keeps its data, the receiver ends up with an identical copy, and nobody else is involved. both sides must agree on the shape and dtype, and every send needs a matching recv. as we'll see later, this is the building block for pipeline parallelism, where activations are handed from one stage to the next.</p>
+
+            <div class="prim">
+              <style>
+                .prim { display: grid; grid-template-columns: 1.15fr 1fr; gap: 20px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 24px; font-family: var(--font-sans); color: var(--text-primary); }
+                .prim-title { grid-column: 1 / -1; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
+                .prim-title b { color: var(--accent); font-weight: 600; }
+                .prim-panel { background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px; }
+                .prim-label { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); margin-bottom: 12px; letter-spacing: .06em; text-transform: uppercase; }
+                .prim-right { display: flex; flex-direction: column; gap: 20px; }
+                .prim-right .prim-panel { flex: 1; }
+
+                /* movement */
+                .prim-move svg { width: 100%; height: auto; display: block; }
+                .gpu-box { fill: var(--bg-surface); stroke: var(--border-subtle); stroke-width: 1; }
+                .gpu-box.active { stroke: var(--accent); fill: var(--accent-glow); }
+                .gpu-name { font-family: var(--font-mono); font-size: 11px; fill: var(--text-secondary); }
+                .tensor { fill: var(--accent); }
+                .tensor-txt { font-family: var(--font-mono); font-size: 12px; font-weight: 600; fill: var(--bg-base); text-anchor: middle; }
+                .arrow { stroke: var(--accent); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; animation: prim-flow 1s linear infinite; }
+                .arrow-head { fill: var(--accent); }
+                .op-txt { font-family: var(--font-mono); font-size: 10px; fill: var(--accent); text-anchor: middle; }
+                @keyframes prim-flow { to { stroke-dashoffset: -9; } }
+
+                /* before / after */
+                .ba-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+                .ba-cell { border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px 6px; text-align: center; background: var(--bg-surface); }
+                .ba-cell small { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); margin-bottom: 8px; }
+                .chip { display: inline-block; min-width: 34px; padding: 4px 10px; border-radius: 6px; font-family: var(--font-mono); font-size: 12px; font-weight: 600; background: var(--accent); color: var(--bg-base); }
+                .chip.other { background: #3f3f46; color: var(--text-primary); }
+                .chip.empty { background: transparent; border: 1px dashed #f59e0b; color: #f59e0b; font-weight: 400; }
+                .ba-cell.new { border-color: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+
+                @media (max-width: 640px) { .prim { grid-template-columns: 1fr; } }
+              </style>
+
+              <div class="prim-title"><b>send / recv</b> &nbsp;·&nbsp; point-to-point</div>
+
+              <!-- left: movement -->
+              <div class="prim-panel prim-move">
+                <div class="prim-label">movement</div>
+                <svg viewBox="0 0 420 200" xmlns="http://www.w3.org/2000/svg">
+                  <!-- GPU 0 -->
+                  <rect class="gpu-box active" x="10" y="60" width="100" height="80" rx="8"/>
+                  <text class="gpu-name" x="60" y="52" text-anchor="middle">GPU 0 · sender</text>
+                  <rect class="tensor" x="38" y="86" width="44" height="28" rx="5"/>
+                  <text class="tensor-txt" x="60" y="105">A</text>
+
+                  <!-- GPU 1 -->
+                  <rect class="gpu-box active" x="310" y="60" width="100" height="80" rx="8"/>
+                  <text class="gpu-name" x="360" y="52" text-anchor="middle">GPU 1 · receiver</text>
+                  <rect x="338" y="86" width="44" height="28" rx="5" fill="none" stroke="#f59e0b" stroke-dasharray="3 3"/>
+
+                  <!-- arrow -->
+                  <line class="arrow" x1="116" y1="100" x2="298" y2="100"/>
+                  <polygon class="arrow-head" points="306,100 296,95 296,105"/>
+                  <text class="op-txt" x="211" y="90">send(A, dst=1)</text>
+                  <text class="op-txt" x="211" y="120">recv(buf, src=0)</text>
+
+                  <!-- GPU 2 (uninvolved) -->
+                  <rect class="gpu-box" x="160" y="160" width="100" height="34" rx="8" opacity=".55"/>
+                  <text class="gpu-name" x="210" y="181" text-anchor="middle" opacity=".7">GPU 2 · uninvolved</text>
+                </svg>
+              </div>
+
+              <!-- right: before / after -->
+              <div class="prim-right">
+                <div class="prim-panel">
+                  <div class="prim-label">before</div>
+                  <div class="ba-row">
+                    <div class="ba-cell"><small>GPU 0</small><span class="chip">A</span></div>
+                    <div class="ba-cell"><small>GPU 1</small><span class="chip empty">empty</span></div>
+                    <div class="ba-cell"><small>GPU 2</small><span class="chip other">C</span></div>
+                  </div>
+                </div>
+                <div class="prim-panel">
+                  <div class="prim-label">after</div>
+                  <div class="ba-row">
+                    <div class="ba-cell"><small>GPU 0</small><span class="chip">A</span></div>
+                    <div class="ba-cell new"><small>GPU 1</small><span class="chip">A</span></div>
+                    <div class="ba-cell"><small>GPU 2</small><span class="chip other">C</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <h4>all-reduce</h4>
+            <p>all-reduce is a collective primitive with every device in a group participating in the transaction. at the start, each participating device holds its own value of the tensor, of the same shape and data type as the others. all-reduce allows all the devices to sync the tensor by applying a reducing function, like sum, product, min, and max to the values. after the operation, every device holds the same tensor, the elementwise reduction across all devices’ inputs. the efficient implementations of this primitive (ring / tree) deserve their own discussion, but is out of scope for the current one. all-reduce is used to sync gradients across gpus in data parallelism (we'll cover this later).</p>
+
+            <div class="prim">
+              <style>
+                .prim { display: grid; grid-template-columns: 1.15fr 1fr; gap: 20px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 24px; font-family: var(--font-sans); color: var(--text-primary); }
+                .prim-title { grid-column: 1 / -1; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
+                .prim-title b { color: var(--accent); font-weight: 600; }
+                .prim-panel { background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px; }
+                .prim-label { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); margin-bottom: 12px; letter-spacing: .06em; text-transform: uppercase; }
+                .prim-right { display: flex; flex-direction: column; gap: 20px; }
+                .prim-right .prim-panel { flex: 1; }
+
+                /* movement */
+                .prim-move svg { width: 100%; height: auto; display: block; }
+                .gpu-box { fill: var(--bg-surface); stroke: var(--border-subtle); stroke-width: 1; }
+                .gpu-box.active { stroke: var(--accent); fill: var(--accent-glow); }
+                .gpu-name { font-family: var(--font-mono); font-size: 11px; fill: var(--text-secondary); }
+                .tensor { fill: #3f3f46; }
+                .tensor-txt { font-family: var(--font-mono); font-size: 11px; font-weight: 600; fill: var(--text-primary); text-anchor: middle; }
+                .arrow { stroke: var(--accent); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; animation: prim-flow 1s linear infinite; }
+                .arrow.up { stroke: var(--text-secondary); }
+                .mk-g { fill: var(--accent); }
+                .mk-s { fill: var(--text-secondary); }
+                .op-txt { font-family: var(--font-mono); font-size: 10px; fill: var(--accent); text-anchor: middle; }
+                .sigma { font-family: var(--font-mono); font-size: 11px; fill: var(--accent); text-anchor: middle; }
+                .legend-s { font-family: var(--font-mono); font-size: 10px; fill: var(--text-secondary); }
+                .legend-g { font-family: var(--font-mono); font-size: 10px; fill: var(--accent); text-anchor: end; }
+                @keyframes prim-flow { to { stroke-dashoffset: -9; } }
+
+                /* before / after */
+                .ba-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+                .ba-row.c4 { grid-template-columns: repeat(4, 1fr); }
+                .ba-cell { border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px 6px; text-align: center; background: var(--bg-surface); }
+                .ba-cell small { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); margin-bottom: 8px; }
+                .chip { display: inline-block; min-width: 34px; padding: 4px 10px; border-radius: 6px; font-family: var(--font-mono); font-size: 12px; font-weight: 600; background: var(--accent); color: var(--bg-base); }
+                .chip.other { background: #3f3f46; color: var(--text-primary); }
+                .chip.v { display: inline-flex; flex-direction: column; gap: 2px; min-width: 0; padding: 4px 9px; }
+                .ba-cell.new { border-color: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+
+                @media (max-width: 640px) { .prim { grid-template-columns: 1fr; } }
+              </style>
+
+              <div class="prim-title"><b>all-reduce</b> &nbsp;·&nbsp; collective &nbsp;·&nbsp; op = sum</div>
+
+              <!-- left: movement -->
+              <div class="prim-panel prim-move">
+                <div class="prim-label">movement</div>
+                <svg viewBox="0 0 420 225" xmlns="http://www.w3.org/2000/svg">
+                  <defs>
+                    <marker id="ar-head-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-g" d="M0 0L10 5L0 10z"/></marker>
+                    <marker id="ar-head-s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-s" d="M0 0L10 5L0 10z"/></marker>
+                  </defs>
+
+                  <!-- reduce node -->
+                  <rect class="gpu-box active" x="130" y="16" width="160" height="40" rx="8"/>
+                  <text class="sigma" x="210" y="40">Σ  all_reduce(sum)</text>
+
+                  <!-- contribute (up) -->
+                  <line class="arrow up" x1="47"  y1="146" x2="145" y2="60" marker-end="url(#ar-head-s)"/>
+                  <line class="arrow up" x1="152" y1="146" x2="185" y2="60" marker-end="url(#ar-head-s)"/>
+                  <line class="arrow up" x1="257" y1="146" x2="225" y2="60" marker-end="url(#ar-head-s)"/>
+                  <line class="arrow up" x1="362" y1="146" x2="265" y2="60" marker-end="url(#ar-head-s)"/>
+
+                  <!-- result (down) -->
+                  <line class="arrow" x1="155" y1="60" x2="63"  y2="146" marker-end="url(#ar-head-g)"/>
+                  <line class="arrow" x1="195" y1="60" x2="168" y2="146" marker-end="url(#ar-head-g)"/>
+                  <line class="arrow" x1="235" y1="60" x2="273" y2="146" marker-end="url(#ar-head-g)"/>
+                  <line class="arrow" x1="275" y1="60" x2="378" y2="146" marker-end="url(#ar-head-g)"/>
+
+                  <!-- GPUs -->
+                  <rect class="gpu-box active" x="10"  y="150" width="90" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="115" y="150" width="90" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="220" y="150" width="90" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="325" y="150" width="90" height="52" rx="8"/>
+
+                  <text class="gpu-name" x="55"  y="165" text-anchor="middle">GPU 0</text>
+                  <text class="gpu-name" x="160" y="165" text-anchor="middle">GPU 1</text>
+                  <text class="gpu-name" x="265" y="165" text-anchor="middle">GPU 2</text>
+                  <text class="gpu-name" x="370" y="165" text-anchor="middle">GPU 3</text>
+
+                  <rect class="tensor" x="27"  y="173" width="56" height="21" rx="5"/>
+                  <rect class="tensor" x="132" y="173" width="56" height="21" rx="5"/>
+                  <rect class="tensor" x="237" y="173" width="56" height="21" rx="5"/>
+                  <rect class="tensor" x="342" y="173" width="56" height="21" rx="5"/>
+                  <text class="tensor-txt" x="55"  y="188">[1, 2]</text>
+                  <text class="tensor-txt" x="160" y="188">[3, 4]</text>
+                  <text class="tensor-txt" x="265" y="188">[5, 6]</text>
+                  <text class="tensor-txt" x="370" y="188">[7, 8]</text>
+
+                  <!-- legend -->
+                  <text class="legend-s" x="10" y="220">↑ contribute</text>
+                  <text class="legend-g" x="415" y="220">↓ same result on every GPU</text>
+                </svg>
+              </div>
+
+              <!-- right: before / after -->
+              <div class="prim-right">
+                <div class="prim-panel">
+                  <div class="prim-label">before</div>
+                  <div class="ba-row c4">
+                    <div class="ba-cell"><small>GPU 0</small><span class="chip v other"><span>1</span><span>2</span></span></div>
+                    <div class="ba-cell"><small>GPU 1</small><span class="chip v other"><span>3</span><span>4</span></span></div>
+                    <div class="ba-cell"><small>GPU 2</small><span class="chip v other"><span>5</span><span>6</span></span></div>
+                    <div class="ba-cell"><small>GPU 3</small><span class="chip v other"><span>7</span><span>8</span></span></div>
+                  </div>
+                </div>
+                <div class="prim-panel">
+                  <div class="prim-label">after</div>
+                  <div class="ba-row c4">
+                    <div class="ba-cell new"><small>GPU 0</small><span class="chip v"><span>16</span><span>20</span></span></div>
+                    <div class="ba-cell new"><small>GPU 1</small><span class="chip v"><span>16</span><span>20</span></span></div>
+                    <div class="ba-cell new"><small>GPU 2</small><span class="chip v"><span>16</span><span>20</span></span></div>
+                    <div class="ba-cell new"><small>GPU 3</small><span class="chip v"><span>16</span><span>20</span></span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <h4>all-gather</h4>
+            <p>all-gather is another collective, but where all-reduce combines values, all-gather assembles them. at the start, each participating device holds a part of the full tensor. a concatenation of the tensors from each device (in rank order), along an axis, gives us the entire tensor. typically, the parts are disjoint shards that together make up the full tensor. after the operation, every device holds the same concatenated tensor. for instance, if we have 4 devices in the group containing $d, a, b$ shaped slice each. then after the all-gather operation along axis-0, each device holds the full $4b, a, d$ tensor.</p>
+
+            <div class="prim">
+              <style>
+                .prim { display: grid; grid-template-columns: 1.15fr 1fr; gap: 20px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 24px; font-family: var(--font-sans); color: var(--text-primary); }
+                .prim-title { grid-column: 1 / -1; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
+                .prim-title b { color: var(--accent); font-weight: 600; }
+                .prim-panel { background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px; }
+                .prim-label { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); margin-bottom: 12px; letter-spacing: .06em; text-transform: uppercase; }
+                .prim-right { display: flex; flex-direction: column; gap: 20px; }
+                .prim-right .prim-panel { flex: 1; }
+
+                /* movement */
+                .prim-move svg { width: 100%; height: auto; display: block; }
+                .gpu-box { fill: var(--bg-surface); stroke: var(--border-subtle); stroke-width: 1; }
+                .gpu-box.active { stroke: var(--accent); fill: var(--accent-glow); }
+                .gpu-name { font-family: var(--font-mono); font-size: 11px; fill: var(--text-secondary); }
+                .tensor { fill: #3f3f46; }
+                .tensor-txt { font-family: var(--font-mono); font-size: 11px; font-weight: 600; fill: var(--text-primary); text-anchor: middle; }
+                .arrow { stroke: var(--accent); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; animation: prim-flow 1s linear infinite; }
+                .arrow.up { stroke: var(--text-secondary); }
+                .mk-g { fill: var(--accent); }
+                .mk-s { fill: var(--text-secondary); }
+                .node-txt { font-family: var(--font-mono); font-size: 11px; fill: var(--accent); text-anchor: middle; }
+                .legend-s { font-family: var(--font-mono); font-size: 10px; fill: var(--text-secondary); }
+                .legend-g { font-family: var(--font-mono); font-size: 10px; fill: var(--accent); text-anchor: end; }
+                @keyframes prim-flow { to { stroke-dashoffset: -9; } }
+
+                /* before / after */
+                .ba-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+                .ba-row.c4 { grid-template-columns: repeat(4, 1fr); }
+                .ba-cell { border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px 6px; text-align: center; background: var(--bg-surface); }
+                .ba-cell small { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); margin-bottom: 8px; }
+                .chip { display: inline-block; min-width: 34px; padding: 4px 10px; border-radius: 6px; font-family: var(--font-mono); font-size: 12px; font-weight: 600; background: var(--accent); color: var(--bg-base); }
+                .chip.other { background: #3f3f46; color: var(--text-primary); }
+                .chip.g { display: inline-grid; grid-template-columns: repeat(2, auto); gap: 3px; min-width: 0; padding: 0; background: transparent; }
+                .chip.g span { padding: 3px 8px; border-radius: 5px; background: var(--accent); color: var(--bg-base); }
+                .chip.g span.k { background: #3f3f46; color: var(--text-primary); }
+                .ba-cell.new { border-color: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+
+                @media (max-width: 640px) { .prim { grid-template-columns: 1fr; } }
+              </style>
+
+              <div class="prim-title"><b>all-gather</b> &nbsp;·&nbsp; collective &nbsp;·&nbsp; concat in rank order</div>
+
+              <!-- left: movement -->
+              <div class="prim-panel prim-move">
+                <div class="prim-label">movement</div>
+                <svg viewBox="0 0 420 225" xmlns="http://www.w3.org/2000/svg">
+                  <defs>
+                    <marker id="ag-head-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-g" d="M0 0L10 5L0 10z"/></marker>
+                    <marker id="ag-head-s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-s" d="M0 0L10 5L0 10z"/></marker>
+                  </defs>
+
+                  <!-- gather node -->
+                  <rect class="gpu-box active" x="130" y="16" width="160" height="40" rx="8"/>
+                  <text class="node-txt" x="210" y="40">all_gather → [a b c d]</text>
+
+                  <!-- contribute shard (up) -->
+                  <line class="arrow up" x1="47"  y1="146" x2="145" y2="60" marker-end="url(#ag-head-s)"/>
+                  <line class="arrow up" x1="152" y1="146" x2="185" y2="60" marker-end="url(#ag-head-s)"/>
+                  <line class="arrow up" x1="257" y1="146" x2="225" y2="60" marker-end="url(#ag-head-s)"/>
+                  <line class="arrow up" x1="362" y1="146" x2="265" y2="60" marker-end="url(#ag-head-s)"/>
+
+                  <!-- full tensor (down) -->
+                  <line class="arrow" x1="155" y1="60" x2="63"  y2="146" marker-end="url(#ag-head-g)"/>
+                  <line class="arrow" x1="195" y1="60" x2="168" y2="146" marker-end="url(#ag-head-g)"/>
+                  <line class="arrow" x1="235" y1="60" x2="273" y2="146" marker-end="url(#ag-head-g)"/>
+                  <line class="arrow" x1="275" y1="60" x2="378" y2="146" marker-end="url(#ag-head-g)"/>
+
+                  <!-- GPUs -->
+                  <rect class="gpu-box active" x="10"  y="150" width="90" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="115" y="150" width="90" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="220" y="150" width="90" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="325" y="150" width="90" height="52" rx="8"/>
+
+                  <text class="gpu-name" x="55"  y="165" text-anchor="middle">GPU 0</text>
+                  <text class="gpu-name" x="160" y="165" text-anchor="middle">GPU 1</text>
+                  <text class="gpu-name" x="265" y="165" text-anchor="middle">GPU 2</text>
+                  <text class="gpu-name" x="370" y="165" text-anchor="middle">GPU 3</text>
+
+                  <rect class="tensor" x="37"  y="173" width="36" height="21" rx="5"/>
+                  <rect class="tensor" x="142" y="173" width="36" height="21" rx="5"/>
+                  <rect class="tensor" x="247" y="173" width="36" height="21" rx="5"/>
+                  <rect class="tensor" x="352" y="173" width="36" height="21" rx="5"/>
+                  <text class="tensor-txt" x="55"  y="188">a</text>
+                  <text class="tensor-txt" x="160" y="188">b</text>
+                  <text class="tensor-txt" x="265" y="188">c</text>
+                  <text class="tensor-txt" x="370" y="188">d</text>
+
+                  <!-- legend -->
+                  <text class="legend-s" x="10" y="220">↑ contribute shard</text>
+                  <text class="legend-g" x="415" y="220">↓ full tensor on every GPU</text>
+                </svg>
+              </div>
+
+              <!-- right: before / after -->
+              <div class="prim-right">
+                <div class="prim-panel">
+                  <div class="prim-label">before</div>
+                  <div class="ba-row c4">
+                    <div class="ba-cell"><small>GPU 0</small><span class="chip other">a</span></div>
+                    <div class="ba-cell"><small>GPU 1</small><span class="chip other">b</span></div>
+                    <div class="ba-cell"><small>GPU 2</small><span class="chip other">c</span></div>
+                    <div class="ba-cell"><small>GPU 3</small><span class="chip other">d</span></div>
+                  </div>
+                </div>
+                <div class="prim-panel">
+                  <div class="prim-label">after</div>
+                  <div class="ba-row c4">
+                    <div class="ba-cell new"><small>GPU 0</small><span class="chip g"><span class="k">a</span><span>b</span><span>c</span><span>d</span></span></div>
+                    <div class="ba-cell new"><small>GPU 1</small><span class="chip g"><span>a</span><span class="k">b</span><span>c</span><span>d</span></span></div>
+                    <div class="ba-cell new"><small>GPU 2</small><span class="chip g"><span>a</span><span>b</span><span class="k">c</span><span>d</span></span></div>
+                    <div class="ba-cell new"><small>GPU 3</small><span class="chip g"><span>a</span><span>b</span><span>c</span><span class="k">d</span></span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <h4>broadcast</h4>
+            <p>broadcast is a one-to-many collective: one designated device, the root, sends its tensor to every other device in the group. before the operation only the root holds the data, and afterwards every device holds an identical copy. semantically, it is equivalent to individual send/recv operations between the source device and every target device, but nccl exposes this as a separate primitive to allow for more optimized data transfer (in a ring). it’s typically used to get all devices to the same starting state, for example when the weights loaded on one device need to be distributed to every other device in the group.</p>
+
+            <div class="prim">
+              <style>
+                .prim { display: grid; grid-template-columns: 1.15fr 1fr; gap: 20px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 24px; font-family: var(--font-sans); color: var(--text-primary); }
+                .prim-title { grid-column: 1 / -1; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
+                .prim-title b { color: var(--accent); font-weight: 600; }
+                .prim-panel { background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px; }
+                .prim-label { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); margin-bottom: 12px; letter-spacing: .06em; text-transform: uppercase; }
+                .prim-right { display: flex; flex-direction: column; gap: 20px; }
+                .prim-right .prim-panel { flex: 1; }
+
+                /* movement */
+                .prim-move svg { width: 100%; height: auto; display: block; }
+                .gpu-box { fill: var(--bg-surface); stroke: var(--border-subtle); stroke-width: 1; }
+                .gpu-box.active { stroke: var(--accent); fill: var(--accent-glow); }
+                .gpu-name { font-family: var(--font-mono); font-size: 11px; fill: var(--text-secondary); }
+                .tensor { fill: #3f3f46; }
+                .tensor-txt { font-family: var(--font-mono); font-size: 12px; font-weight: 600; fill: var(--text-primary); text-anchor: middle; }
+                .empty-buf { fill: none; stroke: #f59e0b; stroke-dasharray: 3 3; }
+                .arrow { stroke: var(--accent); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; animation: prim-flow 1s linear infinite; }
+                .mk-g { fill: var(--accent); }
+                .op-txt { font-family: var(--font-mono); font-size: 10px; fill: var(--accent); text-anchor: middle; }
+                .legend-s { font-family: var(--font-mono); font-size: 10px; fill: var(--text-secondary); }
+                .legend-g { font-family: var(--font-mono); font-size: 10px; fill: var(--accent); text-anchor: end; }
+                @keyframes prim-flow { to { stroke-dashoffset: -9; } }
+
+                /* before / after */
+                .ba-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+                .ba-row.c4 { grid-template-columns: repeat(4, 1fr); }
+                .ba-cell { border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px 6px; text-align: center; background: var(--bg-surface); }
+                .ba-cell small { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); margin-bottom: 8px; }
+                .chip { display: inline-block; min-width: 34px; padding: 4px 10px; border-radius: 6px; font-family: var(--font-mono); font-size: 12px; font-weight: 600; background: var(--accent); color: var(--bg-base); }
+                .chip.other { background: #3f3f46; color: var(--text-primary); }
+                .chip.empty { background: transparent; border: 1px dashed #f59e0b; color: #f59e0b; font-weight: 400; }
+                .ba-cell.new { border-color: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+
+                @media (max-width: 640px) { .prim { grid-template-columns: 1fr; } }
+              </style>
+
+              <div class="prim-title"><b>broadcast</b> &nbsp;·&nbsp; collective &nbsp;·&nbsp; one-to-many</div>
+
+              <!-- left: movement -->
+              <div class="prim-panel prim-move">
+                <div class="prim-label">movement</div>
+                <svg viewBox="0 0 420 225" xmlns="http://www.w3.org/2000/svg">
+                  <defs>
+                    <marker id="bc-head-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-g" d="M0 0L10 5L0 10z"/></marker>
+                  </defs>
+
+                  <!-- root -->
+                  <rect class="gpu-box active" x="140" y="12" width="140" height="64" rx="8"/>
+                  <text class="gpu-name" x="210" y="28" text-anchor="middle">GPU 0 · root</text>
+                  <rect class="tensor" x="190" y="38" width="40" height="26" rx="5"/>
+                  <text class="tensor-txt" x="210" y="56">A</text>
+                  <text class="op-txt" x="350" y="48">broadcast(A, root=0)</text>
+
+                  <!-- fan-out arrows -->
+                  <line class="arrow" x1="175" y1="78" x2="62"  y2="144" marker-end="url(#bc-head-g)"/>
+                  <line class="arrow" x1="210" y1="78" x2="210" y2="144" marker-end="url(#bc-head-g)"/>
+                  <line class="arrow" x1="245" y1="78" x2="358" y2="144" marker-end="url(#bc-head-g)"/>
+
+                  <!-- receivers -->
+                  <rect class="gpu-box active" x="10"  y="150" width="100" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="160" y="150" width="100" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="310" y="150" width="100" height="52" rx="8"/>
+
+                  <text class="gpu-name" x="60"  y="165" text-anchor="middle">GPU 1</text>
+                  <text class="gpu-name" x="210" y="165" text-anchor="middle">GPU 2</text>
+                  <text class="gpu-name" x="360" y="165" text-anchor="middle">GPU 3</text>
+
+                  <rect class="empty-buf" x="40"  y="173" width="40" height="21" rx="5"/>
+                  <rect class="empty-buf" x="190" y="173" width="40" height="21" rx="5"/>
+                  <rect class="empty-buf" x="340" y="173" width="40" height="21" rx="5"/>
+
+                  <!-- legend -->
+                  <text class="legend-s" x="10" y="220">dashed = pre-allocated buffer</text>
+                  <text class="legend-g" x="415" y="220">identical copy on every GPU</text>
+                </svg>
+              </div>
+
+              <!-- right: before / after -->
+              <div class="prim-right">
+                <div class="prim-panel">
+                  <div class="prim-label">before</div>
+                  <div class="ba-row c4">
+                    <div class="ba-cell"><small>GPU 0</small><span class="chip other">A</span></div>
+                    <div class="ba-cell"><small>GPU 1</small><span class="chip empty">empty</span></div>
+                    <div class="ba-cell"><small>GPU 2</small><span class="chip empty">empty</span></div>
+                    <div class="ba-cell"><small>GPU 3</small><span class="chip empty">empty</span></div>
+                  </div>
+                </div>
+                <div class="prim-panel">
+                  <div class="prim-label">after</div>
+                  <div class="ba-row c4">
+                    <div class="ba-cell"><small>GPU 0</small><span class="chip other">A</span></div>
+                    <div class="ba-cell new"><small>GPU 1</small><span class="chip">A</span></div>
+                    <div class="ba-cell new"><small>GPU 2</small><span class="chip">A</span></div>
+                    <div class="ba-cell new"><small>GPU 3</small><span class="chip">A</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <h4>reduce-scatter</h4>
+            <p>reduce-scatter starts like all-reduce: each device holds its own tensor of the same shape, and the tensors are aggregated elementwise with a reduction function. the difference is where the result ends up. instead of every device receiving the full reduced tensor, each device receives only one shard of it (the $i$-th chunk goes to device $i$), which is the same state all-gather starts from. the result is equivalent to an all-reduce where each device then discards everything except its shard, but it’s cheaper, since the full result is never materialized on every device. it’s used in sharded data-parallel schemes like zero and fsdp: each device computes gradients on its own mini-batch, and a reduce-scatter sums them while leaving each device with only the gradients for the parameters it owns (more on that later).</p>
+
+            <p>an all-reduce is equivalent to a reduce-scatter followed by an all-gather: the reduce-scatter leaves each device with one fully reduced shard, and the all-gather then shares those shards so every device has the complete result. this is also how efficient implementations like ring all-reduce work in practice.</p>
+
+            <div class="prim">
+              <style>
+                .prim { display: grid; grid-template-columns: 1.15fr 1fr; gap: 20px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 24px; font-family: var(--font-sans); color: var(--text-primary); }
+                .prim-title { grid-column: 1 / -1; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
+                .prim-title b { color: var(--accent); font-weight: 600; }
+                .prim-panel { background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px; }
+                .prim-label { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); margin-bottom: 12px; letter-spacing: .06em; text-transform: uppercase; }
+                .prim-right { display: flex; flex-direction: column; gap: 20px; }
+                .prim-right .prim-panel { flex: 1; }
+
+                /* movement */
+                .prim-move svg { width: 100%; height: auto; display: block; }
+                .gpu-box { fill: var(--bg-surface); stroke: var(--border-subtle); stroke-width: 1; }
+                .gpu-box.active { stroke: var(--accent); fill: var(--accent-glow); }
+                .gpu-name { font-family: var(--font-mono); font-size: 11px; fill: var(--text-secondary); }
+                .tensor { fill: #3f3f46; }
+                .tensor-txt { font-family: var(--font-mono); font-size: 10px; font-weight: 600; fill: var(--text-primary); text-anchor: middle; }
+                .arrow { stroke: var(--accent); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; animation: prim-flow 1s linear infinite; }
+                .arrow.up { stroke: var(--text-secondary); }
+                .mk-g { fill: var(--accent); }
+                .mk-s { fill: var(--text-secondary); }
+                .node-txt { font-family: var(--font-mono); font-size: 11px; fill: var(--accent); text-anchor: middle; }
+                .shard-txt { font-family: var(--font-mono); font-size: 10px; fill: var(--accent); text-anchor: middle; }
+                .legend-s { font-family: var(--font-mono); font-size: 10px; fill: var(--text-secondary); }
+                .legend-g { font-family: var(--font-mono); font-size: 10px; fill: var(--accent); text-anchor: end; }
+                @keyframes prim-flow { to { stroke-dashoffset: -9; } }
+
+                /* before / after */
+                .ba-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+                .ba-row.c4 { grid-template-columns: repeat(4, 1fr); }
+                .ba-cell { border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px 6px; text-align: center; background: var(--bg-surface); }
+                .ba-cell small { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); margin-bottom: 8px; }
+                .chip { display: inline-block; min-width: 34px; padding: 4px 10px; border-radius: 6px; font-family: var(--font-mono); font-size: 12px; font-weight: 600; background: var(--accent); color: var(--bg-base); }
+                .chip.other { background: #3f3f46; color: var(--text-primary); }
+                .chip.g { display: inline-grid; grid-template-columns: repeat(2, auto); gap: 3px; min-width: 0; padding: 0; background: transparent; }
+                .chip.g span { padding: 3px 7px; border-radius: 5px; background: var(--accent); color: var(--bg-base); }
+                .chip.g span.k { background: #3f3f46; color: var(--text-primary); }
+                .ba-cell.new { border-color: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+
+                @media (max-width: 640px) { .prim { grid-template-columns: 1fr; } }
+              </style>
+
+              <div class="prim-title"><b>reduce-scatter</b> &nbsp;·&nbsp; collective &nbsp;·&nbsp; op = sum</div>
+
+              <!-- left: movement -->
+              <div class="prim-panel prim-move">
+                <div class="prim-label">movement</div>
+                <svg viewBox="0 0 420 225" xmlns="http://www.w3.org/2000/svg">
+                  <defs>
+                    <marker id="rs-head-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-g" d="M0 0L10 5L0 10z"/></marker>
+                    <marker id="rs-head-s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mk-s" d="M0 0L10 5L0 10z"/></marker>
+                  </defs>
+
+                  <!-- reduce + scatter node -->
+                  <rect class="gpu-box active" x="115" y="16" width="190" height="40" rx="8"/>
+                  <text class="node-txt" x="210" y="40">Σ  reduce_scatter(sum)</text>
+
+                  <!-- contribute full tensor (up) -->
+                  <line class="arrow up" x1="47"  y1="146" x2="145" y2="60" marker-end="url(#rs-head-s)"/>
+                  <line class="arrow up" x1="152" y1="146" x2="185" y2="60" marker-end="url(#rs-head-s)"/>
+                  <line class="arrow up" x1="257" y1="146" x2="225" y2="60" marker-end="url(#rs-head-s)"/>
+                  <line class="arrow up" x1="362" y1="146" x2="265" y2="60" marker-end="url(#rs-head-s)"/>
+
+                  <!-- one shard each (down) -->
+                  <line class="arrow" x1="155" y1="60" x2="63"  y2="146" marker-end="url(#rs-head-g)"/>
+                  <line class="arrow" x1="195" y1="60" x2="168" y2="146" marker-end="url(#rs-head-g)"/>
+                  <line class="arrow" x1="235" y1="60" x2="273" y2="146" marker-end="url(#rs-head-g)"/>
+                  <line class="arrow" x1="275" y1="60" x2="378" y2="146" marker-end="url(#rs-head-g)"/>
+
+                  <text class="shard-txt" x="92"  y="112">shard 0</text>
+                  <text class="shard-txt" x="170" y="126">shard 1</text>
+                  <text class="shard-txt" x="252" y="126">shard 2</text>
+                  <text class="shard-txt" x="330" y="112">shard 3</text>
+
+                  <!-- GPUs -->
+                  <rect class="gpu-box active" x="10"  y="150" width="90" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="115" y="150" width="90" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="220" y="150" width="90" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="325" y="150" width="90" height="52" rx="8"/>
+
+                  <text class="gpu-name" x="55"  y="165" text-anchor="middle">GPU 0</text>
+                  <text class="gpu-name" x="160" y="165" text-anchor="middle">GPU 1</text>
+                  <text class="gpu-name" x="265" y="165" text-anchor="middle">GPU 2</text>
+                  <text class="gpu-name" x="370" y="165" text-anchor="middle">GPU 3</text>
+
+                  <rect class="tensor" x="15"  y="173" width="80" height="21" rx="5"/>
+                  <rect class="tensor" x="120" y="173" width="80" height="21" rx="5"/>
+                  <rect class="tensor" x="225" y="173" width="80" height="21" rx="5"/>
+                  <rect class="tensor" x="330" y="173" width="80" height="21" rx="5"/>
+                  <text class="tensor-txt" x="55"  y="187">1 2 3 4</text>
+                  <text class="tensor-txt" x="160" y="187">5 6 7 8</text>
+                  <text class="tensor-txt" x="265" y="187">9 10 11 12</text>
+                  <text class="tensor-txt" x="370" y="187">13 14 15 16</text>
+
+                  <!-- legend -->
+                  <text class="legend-s" x="10" y="220">↑ contribute full tensor</text>
+                  <text class="legend-g" x="415" y="220">↓ GPU i keeps summed shard i</text>
+                </svg>
+              </div>
+
+              <!-- right: before / after -->
+              <div class="prim-right">
+                <div class="prim-panel">
+                  <div class="prim-label">before</div>
+                  <div class="ba-row c4">
+                    <div class="ba-cell"><small>GPU 0</small><span class="chip g"><span class="k">1</span><span class="k">2</span><span class="k">3</span><span class="k">4</span></span></div>
+                    <div class="ba-cell"><small>GPU 1</small><span class="chip g"><span class="k">5</span><span class="k">6</span><span class="k">7</span><span class="k">8</span></span></div>
+                    <div class="ba-cell"><small>GPU 2</small><span class="chip g"><span class="k">9</span><span class="k">10</span><span class="k">11</span><span class="k">12</span></span></div>
+                    <div class="ba-cell"><small>GPU 3</small><span class="chip g"><span class="k">13</span><span class="k">14</span><span class="k">15</span><span class="k">16</span></span></div>
+                  </div>
+                </div>
+                <div class="prim-panel">
+                  <div class="prim-label">after</div>
+                  <div class="ba-row c4">
+                    <div class="ba-cell new"><small>GPU 0</small><span class="chip">28</span></div>
+                    <div class="ba-cell new"><small>GPU 1</small><span class="chip">32</span></div>
+                    <div class="ba-cell new"><small>GPU 2</small><span class="chip">36</span></div>
+                    <div class="ba-cell new"><small>GPU 3</small><span class="chip">40</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <h4>all-to-all</h4>
+            <p>all-to-all is a collective in which every device sends a different shard of its tensor to every other device. each device splits its tensor into one chunk per device, sends chunk $j$ to device $j$, and ends up holding the chunks addressed to it from everyone else (in order of source device rank). if you imagine the chunks as a grid of source device by destination device, all-to-all transposes it. unlike all-gather, the devices end with different data, and unlike reduce-scatter, nothing is reduced: it’s pure routing. it’s the primitive behind expert parallelism, where tokens are dispatched to the devices holding their assigned experts and then returned (to be covered later).</p>
+
+            <div class="prim">
+              <style>
+                .prim { display: grid; grid-template-columns: 1.15fr 1fr; gap: 20px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 24px; font-family: var(--font-sans); color: var(--text-primary); }
+                .prim-title { grid-column: 1 / -1; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
+                .prim-title b { color: var(--accent); font-weight: 600; }
+                .prim-panel { background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px; }
+                .prim-label { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); margin-bottom: 12px; letter-spacing: .06em; text-transform: uppercase; }
+                .prim-right { display: flex; flex-direction: column; gap: 20px; }
+                .prim-right .prim-panel { flex: 1; }
+
+                /* movement: panel fills the row, svg fills the panel */
+                .prim-move { display: flex; flex-direction: column; }
+                .prim-move svg { flex: 1; min-height: 0; width: 100%; height: 100%; display: block; }
+                .gpu-box { fill: var(--bg-surface); stroke: var(--border-subtle); stroke-width: 1; }
+                .gpu-box.active { stroke: var(--accent); fill: var(--accent-glow); }
+                .gpu-name { font-family: var(--font-mono); font-size: 11px; fill: var(--text-secondary); text-anchor: middle; }
+                .ck { fill: #3f3f46; }
+                .ck.g { fill: var(--accent); }
+                .ck-txt { font-family: var(--font-mono); font-size: 9px; font-weight: 600; fill: var(--text-primary); text-anchor: middle; }
+                .ck-txt.g { fill: var(--bg-base); }
+                .arrow { stroke: var(--accent); stroke-width: 1.2; fill: none; stroke-dasharray: 5 4; opacity: .8; animation: prim-flow 1s linear infinite; }
+                .arrow.self { stroke: #52525b; stroke-dasharray: none; animation: none; opacity: .9; }
+                .mk-g { fill: var(--accent); }
+                .legend-s { font-family: var(--font-mono); font-size: 10px; fill: var(--text-secondary); }
+                .legend-g { font-family: var(--font-mono); font-size: 10px; fill: var(--accent); text-anchor: end; }
+                @keyframes prim-flow { to { stroke-dashoffset: -9; } }
+
+                /* before / after */
+                .ba-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+                .ba-row.c2 { grid-template-columns: repeat(2, 1fr); }
+                .ba-cell { border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px 6px; text-align: center; background: var(--bg-surface); }
+                .ba-cell small { display: block; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); margin-bottom: 8px; }
+                .chip.g { display: inline-grid; grid-template-columns: repeat(2, auto); gap: 3px; padding: 0; background: transparent; }
+                .chip.g span { padding: 3px 7px; border-radius: 5px; font-family: var(--font-mono); font-size: 11px; font-weight: 600; background: var(--accent); color: var(--bg-base); }
+                .chip.g span.k { background: #3f3f46; color: var(--text-primary); }
+                .ba-cell.new { border-color: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+
+                @media (max-width: 640px) {
+                  .prim { grid-template-columns: 1fr; }
+                  .prim-move svg { flex: none; height: auto; }
+                }
+              </style>
+
+              <div class="prim-title"><b>all-to-all</b> &nbsp;·&nbsp; collective &nbsp;·&nbsp; transpose</div>
+
+              <!-- left: movement -->
+              <div class="prim-panel prim-move">
+                <div class="prim-label">movement</div>
+                <svg viewBox="0 0 420 516" xmlns="http://www.w3.org/2000/svg">
+                  <defs>
+                    <marker id="aa-head-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path class="mk-g" d="M0 0L10 5L0 10z"/></marker>
+                  </defs>
+
+                  <!-- lines: chunk j of GPU i -> slot i of GPU j -->
+                  <!-- stays local -->
+                  <line class="arrow self" x1="18"  y1="58" x2="18"  y2="432"/>
+                  <line class="arrow self" x1="146" y1="58" x2="146" y2="432"/>
+                  <line class="arrow self" x1="274" y1="58" x2="274" y2="432"/>
+                  <line class="arrow self" x1="402" y1="58" x2="402" y2="432"/>
+                  <!-- from GPU 0 -->
+                  <line class="arrow" x1="42"  y1="58" x2="122" y2="432" marker-end="url(#aa-head-g)"/>
+                  <line class="arrow" x1="66"  y1="58" x2="226" y2="432" marker-end="url(#aa-head-g)"/>
+                  <line class="arrow" x1="90"  y1="58" x2="330" y2="432" marker-end="url(#aa-head-g)"/>
+                  <!-- from GPU 1 -->
+                  <line class="arrow" x1="122" y1="58" x2="42"  y2="432" marker-end="url(#aa-head-g)"/>
+                  <line class="arrow" x1="170" y1="58" x2="250" y2="432" marker-end="url(#aa-head-g)"/>
+                  <line class="arrow" x1="194" y1="58" x2="354" y2="432" marker-end="url(#aa-head-g)"/>
+                  <!-- from GPU 2 -->
+                  <line class="arrow" x1="226" y1="58" x2="66"  y2="432" marker-end="url(#aa-head-g)"/>
+                  <line class="arrow" x1="250" y1="58" x2="170" y2="432" marker-end="url(#aa-head-g)"/>
+                  <line class="arrow" x1="298" y1="58" x2="378" y2="432" marker-end="url(#aa-head-g)"/>
+                  <!-- from GPU 3 -->
+                  <line class="arrow" x1="330" y1="58" x2="90"  y2="432" marker-end="url(#aa-head-g)"/>
+                  <line class="arrow" x1="354" y1="58" x2="194" y2="432" marker-end="url(#aa-head-g)"/>
+                  <line class="arrow" x1="378" y1="58" x2="298" y2="432" marker-end="url(#aa-head-g)"/>
+
+                  <!-- source GPUs (top) -->
+                  <rect class="gpu-box active" x="4"   y="6" width="100" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="108" y="6" width="100" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="212" y="6" width="100" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="316" y="6" width="100" height="52" rx="8"/>
+                  <text class="gpu-name" x="54"  y="20">GPU 0</text>
+                  <text class="gpu-name" x="158" y="20">GPU 1</text>
+                  <text class="gpu-name" x="262" y="20">GPU 2</text>
+                  <text class="gpu-name" x="366" y="20">GPU 3</text>
+
+                  <!-- source chunks -->
+                  <rect class="ck" x="7"   y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="18"  y="44">A0</text>
+                  <rect class="ck" x="31"  y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="42"  y="44">A1</text>
+                  <rect class="ck" x="55"  y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="66"  y="44">A2</text>
+                  <rect class="ck" x="79"  y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="90"  y="44">A3</text>
+
+                  <rect class="ck" x="111" y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="122" y="44">B0</text>
+                  <rect class="ck" x="135" y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="146" y="44">B1</text>
+                  <rect class="ck" x="159" y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="170" y="44">B2</text>
+                  <rect class="ck" x="183" y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="194" y="44">B3</text>
+
+                  <rect class="ck" x="215" y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="226" y="44">C0</text>
+                  <rect class="ck" x="239" y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="250" y="44">C1</text>
+                  <rect class="ck" x="263" y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="274" y="44">C2</text>
+                  <rect class="ck" x="287" y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="298" y="44">C3</text>
+
+                  <rect class="ck" x="319" y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="330" y="44">D0</text>
+                  <rect class="ck" x="343" y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="354" y="44">D1</text>
+                  <rect class="ck" x="367" y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="378" y="44">D2</text>
+                  <rect class="ck" x="391" y="30" width="22" height="20" rx="4"/><text class="ck-txt" x="402" y="44">D3</text>
+
+                  <!-- destination GPUs (bottom) -->
+                  <rect class="gpu-box active" x="4"   y="432" width="100" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="108" y="432" width="100" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="212" y="432" width="100" height="52" rx="8"/>
+                  <rect class="gpu-box active" x="316" y="432" width="100" height="52" rx="8"/>
+                  <text class="gpu-name" x="54"  y="477">GPU 0</text>
+                  <text class="gpu-name" x="158" y="477">GPU 1</text>
+                  <text class="gpu-name" x="262" y="477">GPU 2</text>
+                  <text class="gpu-name" x="366" y="477">GPU 3</text>
+
+                  <!-- destination chunks (grey = was already local) -->
+                  <rect class="ck"   x="7"   y="438" width="22" height="20" rx="4"/><text class="ck-txt"   x="18"  y="452">A0</text>
+                  <rect class="ck g" x="31"  y="438" width="22" height="20" rx="4"/><text class="ck-txt g" x="42"  y="452">B0</text>
+                  <rect class="ck g" x="55"  y="438" width="22" height="20" rx="4"/><text class="ck-txt g" x="66"  y="452">C0</text>
+                  <rect class="ck g" x="79"  y="438" width="22" height="20" rx="4"/><text class="ck-txt g" x="90"  y="452">D0</text>
+
+                  <rect class="ck g" x="111" y="438" width="22" height="20" rx="4"/><text class="ck-txt g" x="122" y="452">A1</text>
+                  <rect class="ck"   x="135" y="438" width="22" height="20" rx="4"/><text class="ck-txt"   x="146" y="452">B1</text>
+                  <rect class="ck g" x="159" y="438" width="22" height="20" rx="4"/><text class="ck-txt g" x="170" y="452">C1</text>
+                  <rect class="ck g" x="183" y="438" width="22" height="20" rx="4"/><text class="ck-txt g" x="194" y="452">D1</text>
+
+                  <rect class="ck g" x="215" y="438" width="22" height="20" rx="4"/><text class="ck-txt g" x="226" y="452">A2</text>
+                  <rect class="ck g" x="239" y="438" width="22" height="20" rx="4"/><text class="ck-txt g" x="250" y="452">B2</text>
+                  <rect class="ck"   x="263" y="438" width="22" height="20" rx="4"/><text class="ck-txt"   x="274" y="452">C2</text>
+                  <rect class="ck g" x="287" y="438" width="22" height="20" rx="4"/><text class="ck-txt g" x="298" y="452">D2</text>
+
+                  <rect class="ck g" x="319" y="438" width="22" height="20" rx="4"/><text class="ck-txt g" x="330" y="452">A3</text>
+                  <rect class="ck g" x="343" y="438" width="22" height="20" rx="4"/><text class="ck-txt g" x="354" y="452">B3</text>
+                  <rect class="ck g" x="367" y="438" width="22" height="20" rx="4"/><text class="ck-txt g" x="378" y="452">C3</text>
+                  <rect class="ck"   x="391" y="438" width="22" height="20" rx="4"/><text class="ck-txt"   x="402" y="452">D3</text>
+
+                  <!-- legend -->
+                  <text class="legend-s" x="4"   y="508">grey = stays local</text>
+                  <text class="legend-g" x="416" y="508">chunk j of every GPU → GPU j</text>
+                </svg>
+              </div>
+
+              <!-- right: before / after -->
+              <div class="prim-right">
+                <div class="prim-panel">
+                  <div class="prim-label">before</div>
+                  <div class="ba-row c2">
+                    <div class="ba-cell"><small>GPU 0</small><span class="chip g"><span class="k">A0</span><span class="k">A1</span><span class="k">A2</span><span class="k">A3</span></span></div>
+                    <div class="ba-cell"><small>GPU 1</small><span class="chip g"><span class="k">B0</span><span class="k">B1</span><span class="k">B2</span><span class="k">B3</span></span></div>
+                    <div class="ba-cell"><small>GPU 2</small><span class="chip g"><span class="k">C0</span><span class="k">C1</span><span class="k">C2</span><span class="k">C3</span></span></div>
+                    <div class="ba-cell"><small>GPU 3</small><span class="chip g"><span class="k">D0</span><span class="k">D1</span><span class="k">D2</span><span class="k">D3</span></span></div>
+                  </div>
+                </div>
+                <div class="prim-panel">
+                  <div class="prim-label">after</div>
+                  <div class="ba-row c2">
+                    <div class="ba-cell new"><small>GPU 0</small><span class="chip g"><span class="k">A0</span><span>B0</span><span>C0</span><span>D0</span></span></div>
+                    <div class="ba-cell new"><small>GPU 1</small><span class="chip g"><span>A1</span><span class="k">B1</span><span>C1</span><span>D1</span></span></div>
+                    <div class="ba-cell new"><small>GPU 2</small><span class="chip g"><span>A2</span><span>B2</span><span class="k">C2</span><span>D2</span></span></div>
+                    <div class="ba-cell new"><small>GPU 3</small><span class="chip g"><span>A3</span><span>B3</span><span>C3</span><span class="k">D3</span></span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+        </section>
+
+        <hr class="divider">
+
+        <footer>
+            <span>on distributed training & inference paradigms</span>
+            <span>darth-c0d3r</span>
+        </footer>
+    </div>
+
+    <script>
+        // Reading Progress Bar Logic
+        window.addEventListener('scroll', () => {
+            const winScroll = window.scrollY;
+            const height = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+            const scrolled = height > 0 ? (winScroll / height) * 100 : 0;
+            document.getElementById('readingProgress').style.width = scrolled + '%';
+        });
+    </script>
+</body>
+</html>
