@@ -348,8 +348,16 @@
 
             <h3>anatomy of a floating-point number</h3>
             <p>the general mathematical value of a floating-point number is expressed as:</p>
-            <p style="text-align: center;">$$\text{value} = (-1)^S \times \left(1 + \frac{M}{2^m}\right) \times 2^{E - \text{bias}}$$</p>
-            <p>where the fractional term $\left(1 + \frac{M}{2^m}\right)$ ranges from $1$ (inclusive) to $2$ (exclusive).</p>
+            <p style="text-align: center;">$$\text{value} = (-1)^S \times \left(1 + \frac{M}{2^{m_{\max }}}\right) \times 2^{E - \text{bias}}$$</p>
+            <p>where the fractional term $\left(1 + \frac{M}{2^{m_{\max }}}\right)$ ranges from $1$ (inclusive) to $2$ (exclusive).</p>
+            <p><strong>component definitions:</strong></p>
+            <ul>
+                <li><strong>$s$ (sign bit)</strong>: determines whether the number is positive ($S = 0$) or negative ($S = 1$).</li>
+                <li><strong>$m$ (fraction / mantissa bits)</strong>: the discrete bit-width allocated to store the fractional part of the significand (e.g., $23$ bits in <code>float32</code>, $7$ bits in <code>bfloat16</code>).</li>
+                <li><strong>$m_{\max}$ (maximum fraction value / precision denominator)</strong>: equals $2^m$, representing the number of discrete fractional subdivisions ($2^{23}$ for <code>float32</code>).</li>
+                <li><strong>$e$ (exponent bits)</strong>: the discrete bit-width allocated to store the biased exponent (e.g., $8$ bits in <code>float32</code> and <code>bfloat16</code>).</li>
+                <li><strong>$\text{bias}$</strong>: a fixed integer offset subtracted from the stored exponent value $E$ to allow representation of both positive and negative exponents (e.g., $127$ for <code>float32</code>, $127$ for <code>bfloat16</code>, $15$ for <code>float16</code>).</li>
+            </ul>
 
             <h3>range vs. precision trade-off</h3>
             <ul>
