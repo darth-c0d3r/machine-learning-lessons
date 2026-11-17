@@ -233,7 +233,7 @@
 
             <p>a communication primitive is a basic operation for moving data between devices, with precisely defined semantics: who holds what before, and who holds what after. they come in two kinds: point-to-point operations between a pair of gpus, and collectives, where a whole group of gpus participates together. every parallelism strategy we’ll look at is built out of these, so it’s worth getting comfortable with them before moving on.</p>
 
-            <p style="font-size: 0.85rem; font-style: italic; color: var(--text-secondary); margin-top: 16px;">
+            <p style="font-size: 0.9rem; font-style: italic; color: var(--text-secondary); margin-top: 16px;">
                 note: the visualized data flows for these communication primitives represent the high-level logical transformations and device synchronization states. they are abstract representations and do not reflect the lower-level hardware-specific implementations (e.g., specific ring-based transfer protocols or nv-switch-level routing) that govern actual performance at the hardware layer.
             </p>
 
