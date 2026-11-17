@@ -15,7 +15,60 @@
         }
         body { background: var(--bg); color: var(--text-primary); font-family: 'Plus Jakarta Sans', sans-serif; line-height: 1.6; margin: 0; padding: 40px; }
         .container { max-width: 600px; margin: 0 auto; }
-        h1 { font-size: 1.5rem; font-weight: 500; margin-bottom: 2rem; color: var(--text-primary); }
+        h1 { font-size: 1.5rem; font-weight: 500; margin-bottom: 2rem; color: var(--text-primary); display: inline-block; position: relative; }
+        @keyframes tv-jitter {
+            0%, 100% {
+                transform: translate(0, 0);
+                color: var(--text-primary);
+                clip-path: inset(0 0 0 0);
+            }
+            10% {
+                transform: translate(-2px, 1px);
+                color: var(--accent);
+                clip-path: inset(20% 0 30% 0);
+            }
+            20% {
+                transform: translate(2px, -1px);
+                color: var(--accent);
+                clip-path: inset(60% 0 10% 0);
+            }
+            30% {
+                transform: translate(-1px, 2px);
+                color: var(--text-primary);
+                clip-path: inset(10% 0 70% 0);
+            }
+            40% {
+                transform: translate(1px, -2px);
+                color: var(--accent);
+                clip-path: inset(40% 0 40% 0);
+            }
+            50% {
+                transform: translate(-2px, -1px);
+                color: var(--accent);
+                clip-path: inset(80% 0 5% 0);
+            }
+            60% {
+                transform: translate(2px, 1px);
+                color: var(--text-primary);
+                clip-path: inset(15% 0 50% 0);
+            }
+            70% {
+                transform: translate(-1px, -2px);
+                color: var(--accent);
+                clip-path: inset(50% 0 20% 0);
+            }
+            85% {
+                transform: translate(1px, 2px);
+                color: var(--accent);
+                clip-path: inset(5% 0 85% 0);
+            }
+        }
+        .jitter-title {
+            /* base state */
+        }
+        .active-jitter {
+            animation: tv-jitter var(--jitter-duration, 0.5s) steps(2, end) forwards;
+        }
         ul { list-style: none; padding: 0; }
         li { margin-bottom: 12px; }
         a { color: var(--text-secondary); text-decoration: none; border-bottom: 1px solid var(--border-subtle); transition: color 0.2s; font-family: 'JetBrains Mono', monospace; font-size: 0.9rem; }
@@ -25,7 +78,7 @@
 </head>
 <body>
     <div class="container">
-        <h1>machine learning lessons</h1>
+        <h1><span id="main-title" class="jitter-title">machine learning lessons</span></h1>
         <ul>
             <li><a href="1-transformer-arithmetic/index.html">01 — transformer arithmetic</a></li>
             <li><a href="2-initialization-basics/index.html">02 — initialization basics</a></li>
@@ -35,5 +88,31 @@
             <span>darth-c0d3r</span>
         </footer>
     </div>
+    <script>
+        // Configurable duration (in seconds) and random interval range (10 to 20 seconds)
+        const jitterDuration = 0.2;  // lasts for 0.2s
+        const minInterval = 5.0;    // min seconds between jitters
+        const maxInterval = 20.0;    // max seconds between jitters
+
+        const titleEl = document.getElementById('main-title');
+        titleEl.style.setProperty('--jitter-duration', jitterDuration + 's');
+
+        function triggerJitter() {
+            titleEl.classList.add('active-jitter');
+            setTimeout(() => {
+                titleEl.classList.remove('active-jitter');
+            }, jitterDuration * 1000);
+
+            scheduleNextJitter();
+        }
+
+        function scheduleNextJitter() {
+            const randomInterval = (Math.random() * (maxInterval - minInterval) + minInterval) * 1000;
+            setTimeout(triggerJitter, randomInterval);
+        }
+
+        // Initial schedule
+        scheduleNextJitter();
+    </script>
 </body>
 </html>
