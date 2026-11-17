@@ -26,15 +26,15 @@ newer hardware architectures, such as NVIDIA H100 GPUs, introduce 8-bit floating
 
 the general mathematical value of a floating-point number is expressed as:
 
-$$\text{value} = (-1)^S \times \left(1 + \frac{M}{2^{M_{\max }}}\right) \times 2^{E - \text{bias}}$$
+$$\text{value} = (-1)^S \times \left(1 + \frac{M}{M_{max}}\right) \times 2^{E - \text{bias}}$$
 
-where the fractional term $\left(1 + \frac{M}{2^{m_{\max }}}\right)$ ranges from $1$ (inclusive) to $2$ (exclusive).
+where the fractional term $\left(1 + \frac{M}{M_{max}}\right)$ ranges from $1$ (inclusive) to $2$ (exclusive).
 
 **component definitions:**
-* **$S$ (sign bit)**: determines whether the number is positive ($S = 0$) or negative ($S = 1$).
-* **$M$ (fraction / mantissa bits)**: the discrete bit-width allocated to store the fractional part of the significand (e.g., $23$ bits in `float32`, $7$ bits in `bfloat16`).
-* **$M_{\max}$ (maximum fraction value / precision denominator)**: equals $2^m$, representing the number of discrete fractional subdivisions ($2^{23}$ for `float32`).
-* **$E$ (exponent bits)**: the discrete bit-width allocated to store the biased exponent (e.g., $8$ bits in `float32` and `bfloat16`).
+* **$S$**: the value of the sign bit ($0$ or $1$).
+* **$M$**: the value of the fraction / mantissa bits.
+* **$M_{max}$**: $2^{\text{bit width of mantissa}}$ (e.g., $2^{23}$ for `float32`).
+* **$E$**: the value of the exponent bits.
 * **$\text{bias}$**: a fixed integer offset subtracted from the stored exponent value $E$ to allow representation of both positive and negative exponents (e.g., $127$ for `float32`, $127$ for `bfloat16`, $15$ for `float16`).
 
 ### range vs. precision trade-off

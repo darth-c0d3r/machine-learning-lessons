@@ -42,3 +42,5 @@ an all-reduce is equivalent to a reduce-scatter followed by an all-gather: the r
 
 all-to-all is a collective in which every device sends a different shard of its tensor to every other device. each device splits its tensor into one chunk per device, sends chunk j to device j, and ends up holding the chunks addressed to it from everyone else (in order of source device rank). if you imagine the chunks as a grid of source device by destination device, all-to-all transposes it. unlike all-gather, the devices end with different data, and unlike reduce-scatter, nothing is reduced: it’s pure routing. it’s the primitive behind expert parallelism, where tokens are dispatched to the devices holding their assigned experts and then returned (to be covered later).
 
+## data parallelism
+
