@@ -1085,6 +1085,167 @@
 
         <hr class="divider">
 
+        <section>
+            <h2>model parallelism</h2>
+            <p>when the memory required to train a model (which includes weights, gradients, and optimizer states) surpasses that of a single device, we can leverage multiple devices and combine them to make the training run feasible. in model parallelism, the model is split horizontally, and the model's layers are arranged sequentially along a series of devices. for instance, for a 12-layer model in a system with 4 gpus, the layers 0-1-2 could sit on gpu-0, the layers 3-4-5 could sit on gpu-1, and all the way up to the layers 9-10-11 which could sit on the final gpu-3. this is of course a simple example: the layers don't have to be equally split - although we would want each gpu device to get a similar amount of workload for maximum usage. in addition to the model weights, each device will also only hold the gradients and optimizer states for the corresponding layers. this cuts the memory requirement per device by a factor of number of devices ($n$).</p>
+            <p>during the forward pass, device-0 gets the complete mini-batch. it passes the data through its layers, and forwards the output of the final layer held by it onto the next device for the rest of the forward computation. each device will hold on to at least some of the intermediate activations (depending upon the amount of activation checkpointing used) for the gradient computation during the backward pass. the final device containing the final layers of the model will compute the loss and initiate the backpropagation. the backward pass traverses the devices in reverse order, computing the gradients as it goes and then updating the corresponding optimizer states and model weights. the intermediate activations stored on a device can be flushed as soon as the backward pass crosses it. once the pass reaches the first device, and its update completes, the system is ready for the next mini-batch.</p>
+            <p>in terms of communication, there are only $2 \cdot (n-1)$ send/recv operations per step. communication in model parallelism is light: only the activations at each stage boundary move forward, and the matching gradients move backward, so the volume per step is small compared to the full gradient all-reduce of data parallelism. this makes it tolerant of slower links, and it is commonly used across nodes over infiniband or ethernet. the catch is latency: the stages run strictly one after another, so each device waits on the previous one, and any transfer delay lands directly on the critical path with nothing to overlap it. data parallelism can hide its all-reduce behind the backward pass, but naive model parallelism has no such cushion. efficiency is one of the biggest drawbacks of model parallelism - at any time, only a single gpu is actively involved in computation while the others sit idle, thus capping its utilization at $1/n$. this idle time is known as a pipeline bubble. a related parallelism technique called pipeline parallelism addresses this concern which we will cover soon.</p>
+
+            <div class="mpf">
+              <style>
+                .mpf { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 24px; font-family: var(--font-sans); color: var(--text-primary); }
+                .mpf-title { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 16px; }
+                .mpf-title b { color: var(--accent); font-weight: 600; }
+                .mpf-panel { background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px; }
+                .mpf-panel svg { width: 100%; height: auto; display: block; }
+
+                .mpf-row { fill: none; stroke: var(--border-subtle); stroke-width: 1; }
+                .mpf-grid { stroke: rgba(255,255,255,.04); stroke-width: 1; }
+                .mpf-axis { stroke: var(--border-subtle); stroke-width: 1; }
+                .mpf-tick { font-family: var(--font-mono); font-size: 9px; fill: var(--text-secondary); text-anchor: middle; }
+                .mpf-axis-t { font-family: var(--font-mono); font-size: 10px; fill: var(--text-secondary); text-anchor: end; }
+                .mpf-gname { font-family: var(--font-mono); font-size: 11px; fill: var(--text-secondary); }
+                .mpf-gsub { font-family: var(--font-mono); font-size: 9px; fill: #71717a; }
+
+                .mpf-chip { fill: #3f3f46; }
+                .mpf-chip-t { font-family: var(--font-mono); font-size: 10px; font-weight: 600; fill: var(--text-primary); text-anchor: middle; }
+
+                .mpf-f { fill: var(--accent); }
+                .mpf-b { fill: var(--accent-glow); stroke: var(--accent); stroke-width: 1.2; }
+                .mpf-ft { font-family: var(--font-mono); font-size: 10px; font-weight: 600; fill: var(--bg-base); text-anchor: middle; }
+                .mpf-ft.s { font-weight: 400; }
+                .mpf-bt { font-family: var(--font-mono); font-size: 10px; font-weight: 600; fill: var(--accent); text-anchor: middle; }
+                .mpf-bt.s { font-weight: 400; }
+
+                .mpf-idle { fill: none; stroke: #3f3f46; stroke-dasharray: 4 3; }
+                .mpf-idle-t { font-family: var(--font-mono); font-size: 10px; fill: #71717a; text-anchor: middle; }
+
+                .mpf-in { stroke: var(--text-secondary); stroke-width: 1.3; stroke-dasharray: 4 3; animation: mpf-flow 1s linear infinite; }
+                .mpf-arr { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; animation: mpf-flow 1s linear infinite; }
+                .mpf-head { fill: var(--accent); }
+                .mpf-tr-t { font-family: var(--font-mono); font-size: 9px; fill: var(--accent); }
+                .mpf-loss { font-family: var(--font-mono); font-size: 9px; fill: var(--accent); text-anchor: middle; }
+                @keyframes mpf-flow { to { stroke-dashoffset: -7; } }
+
+                .mpf-note { margin-top: 14px; font-size: 13px; line-height: 1.5; color: var(--text-secondary); }
+                .mpf-note .g { color: var(--accent); }
+                .mpf-legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 12px; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); }
+                .mpf-legend i { display: inline-block; width: 14px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+                .mpf-legend .lf { background: var(--accent); }
+                .mpf-legend .lb { background: var(--accent-glow); border: 1px solid var(--accent); }
+                .mpf-legend .li { border: 1px dashed #52525b; }
+              </style>
+
+              <div class="mpf-title"><b>model parallelism</b> &nbsp;·&nbsp; layers split across gpus &nbsp;·&nbsp; one mini-batch</div>
+
+              <div class="mpf-panel">
+                <svg viewBox="0 0 760 372" xmlns="http://www.w3.org/2000/svg">
+                  <defs>
+                    <marker id="mpf-mk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="mpf-head" d="M0 0L10 5L0 10z"/></marker>
+                  </defs>
+
+                  <!-- time grid + ticks -->
+                  <g>
+                    <line class="mpf-grid" x1="130" y1="14" x2="130" y2="322"/><text class="mpf-tick" x="130" y="342">0</text>
+                    <line class="mpf-grid" x1="181" y1="14" x2="181" y2="322"/><text class="mpf-tick" x="181" y="342">1</text>
+                    <line class="mpf-grid" x1="232" y1="14" x2="232" y2="322"/><text class="mpf-tick" x="232" y="342">2</text>
+                    <line class="mpf-grid" x1="283" y1="14" x2="283" y2="322"/><text class="mpf-tick" x="283" y="342">3</text>
+                    <line class="mpf-grid" x1="334" y1="14" x2="334" y2="322"/><text class="mpf-tick" x="334" y="342">4</text>
+                    <line class="mpf-grid" x1="385" y1="14" x2="385" y2="322"/><text class="mpf-tick" x="385" y="342">5</text>
+                    <line class="mpf-grid" x1="436" y1="14" x2="436" y2="322"/><text class="mpf-tick" x="436" y="342">6</text>
+                    <line class="mpf-grid" x1="487" y1="14" x2="487" y2="322"/><text class="mpf-tick" x="487" y="342">7</text>
+                    <line class="mpf-grid" x1="538" y1="14" x2="538" y2="322"/><text class="mpf-tick" x="538" y="342">8</text>
+                    <line class="mpf-grid" x1="589" y1="14" x2="589" y2="322"/><text class="mpf-tick" x="589" y="342">9</text>
+                    <line class="mpf-grid" x1="640" y1="14" x2="640" y2="322"/><text class="mpf-tick" x="640" y="342">10</text>
+                    <line class="mpf-grid" x1="691" y1="14" x2="691" y2="322"/><text class="mpf-tick" x="691" y="342">11</text>
+                    <line class="mpf-grid" x1="742" y1="14" x2="742" y2="322"/><text class="mpf-tick" x="742" y="342">12</text>
+                    <line class="mpf-axis" x1="130" y1="326" x2="742" y2="326"/>
+                    <text class="mpf-axis-t" x="742" y="362">time →</text>
+                  </g>
+
+                  <!-- GPU rows (bottom to top: GPU 0 ... GPU 3) -->
+                  <rect class="mpf-row" x="130" y="260" width="612" height="56" rx="6"/>
+                  <rect class="mpf-row" x="130" y="180" width="612" height="56" rx="6"/>
+                  <rect class="mpf-row" x="130" y="100" width="612" height="56" rx="6"/>
+                  <rect class="mpf-row" x="130" y="20"  width="612" height="56" rx="6"/>
+                  <text class="mpf-gname" x="12" y="285">GPU 0</text><text class="mpf-gsub" x="12" y="301">layers 0–2</text>
+                  <text class="mpf-gname" x="12" y="205">GPU 1</text><text class="mpf-gsub" x="12" y="221">layers 3–5</text>
+                  <text class="mpf-gname" x="12" y="125">GPU 2</text><text class="mpf-gsub" x="12" y="141">layers 6–8</text>
+                  <text class="mpf-gname" x="12" y="45">GPU 3</text><text class="mpf-gsub" x="12" y="61">layers 9–11</text>
+
+                  <!-- idle time (pipeline bubble) -->
+                  <rect class="mpf-idle" x="182.5" y="263" width="456" height="50" rx="5"/>
+                  <text class="mpf-idle-t" x="410" y="292">idle</text>
+
+                  <rect class="mpf-idle" x="131.5" y="183" width="48"  height="50" rx="5"/>
+                  <rect class="mpf-idle" x="233.5" y="183" width="303" height="50" rx="5"/>
+                  <rect class="mpf-idle" x="641.5" y="183" width="99"  height="50" rx="5"/>
+                  <text class="mpf-idle-t" x="385" y="212">idle</text>
+
+                  <rect class="mpf-idle" x="131.5" y="103" width="99"  height="50" rx="5"/>
+                  <rect class="mpf-idle" x="284.5" y="103" width="150" height="50" rx="5"/>
+                  <rect class="mpf-idle" x="539.5" y="103" width="201" height="50" rx="5"/>
+                  <text class="mpf-idle-t" x="359" y="132">idle</text>
+                  <text class="mpf-idle-t" x="640" y="132">idle</text>
+
+                  <rect class="mpf-idle" x="131.5" y="23" width="150" height="50" rx="5"/>
+                  <rect class="mpf-idle" x="437.5" y="23" width="303" height="50" rx="5"/>
+                  <text class="mpf-idle-t" x="206" y="52">idle</text>
+                  <text class="mpf-idle-t" x="589" y="52">idle</text>
+
+                  <!-- batch entering GPU 0 at t=0 -->
+                  <rect class="mpf-chip" x="66" y="304" width="54" height="28" rx="6"/>
+                  <text class="mpf-chip-t" x="93" y="322">batch</text>
+                  <line class="mpf-in" x1="122" y1="314" x2="128" y2="314" marker-end="url(#mpf-mk)"/>
+
+                  <!-- forward blocks (1 unit each) -->
+                  <rect class="mpf-f" x="131.5" y="260" width="48" height="56" rx="6"/>
+                  <text class="mpf-ft" x="155" y="284">fwd</text><text class="mpf-ft s" x="155" y="299">L0–2</text>
+                  <rect class="mpf-f" x="182.5" y="180" width="48" height="56" rx="6"/>
+                  <text class="mpf-ft" x="206" y="204">fwd</text><text class="mpf-ft s" x="206" y="219">L3–5</text>
+                  <rect class="mpf-f" x="233.5" y="100" width="48" height="56" rx="6"/>
+                  <text class="mpf-ft" x="257" y="124">fwd</text><text class="mpf-ft s" x="257" y="139">L6–8</text>
+                  <rect class="mpf-f" x="284.5" y="20" width="48" height="56" rx="6"/>
+                  <text class="mpf-ft" x="308" y="44">fwd</text><text class="mpf-ft s" x="308" y="59">L9–11</text>
+
+                  <!-- backward blocks (2 units each) -->
+                  <rect class="mpf-b" x="335.5" y="20" width="99" height="56" rx="6"/>
+                  <text class="mpf-bt" x="385" y="44">bwd</text><text class="mpf-bt s" x="385" y="59">L9–11</text>
+                  <rect class="mpf-b" x="437.5" y="100" width="99" height="56" rx="6"/>
+                  <text class="mpf-bt" x="487" y="124">bwd</text><text class="mpf-bt s" x="487" y="139">L6–8</text>
+                  <rect class="mpf-b" x="539.5" y="180" width="99" height="56" rx="6"/>
+                  <text class="mpf-bt" x="589" y="204">bwd</text><text class="mpf-bt s" x="589" y="219">L3–5</text>
+                  <rect class="mpf-b" x="641.5" y="260" width="99" height="56" rx="6"/>
+                  <text class="mpf-bt" x="691" y="284">bwd</text><text class="mpf-bt s" x="691" y="299">L0–2</text>
+
+                  <!-- activations forward (send/recv between stages) -->
+                  <line class="mpf-arr" x1="181" y1="259" x2="181" y2="238" marker-end="url(#mpf-mk)"/><text class="mpf-tr-t" x="187" y="252">act</text>
+                  <line class="mpf-arr" x1="232" y1="179" x2="232" y2="158" marker-end="url(#mpf-mk)"/><text class="mpf-tr-t" x="238" y="172">act</text>
+                  <line class="mpf-arr" x1="283" y1="99"  x2="283" y2="78"  marker-end="url(#mpf-mk)"/><text class="mpf-tr-t" x="289" y="92">act</text>
+
+                  <!-- loss at the last stage -->
+                  <text class="mpf-loss" x="334" y="12">loss</text>
+
+                  <!-- gradients backward -->
+                  <line class="mpf-arr" x1="436" y1="77"  x2="436" y2="98"  marker-end="url(#mpf-mk)"/><text class="mpf-tr-t" x="442" y="92">grad</text>
+                  <line class="mpf-arr" x1="538" y1="157" x2="538" y2="178" marker-end="url(#mpf-mk)"/><text class="mpf-tr-t" x="544" y="172">grad</text>
+                  <line class="mpf-arr" x1="640" y1="237" x2="640" y2="258" marker-end="url(#mpf-mk)"/><text class="mpf-tr-t" x="646" y="252">grad</text>
+                </svg>
+              </div>
+
+              <div class="mpf-note">each gpu is busy for 3 of 12 time units: <span class="g">25% = 1/n</span> utilization. only one gpu works at any moment.</div>
+
+              <div class="mpf-legend">
+                <span><i class="lf"></i>forward (1 unit)</span>
+                <span><i class="lb"></i>backward (~2 units)</span>
+                <span><i class="li"></i>idle (pipeline bubble)</span>
+              </div>
+            </div>
+
+        </section>
+
+        <hr class="divider">
+
         <footer>
             <span>on distributed training & inference paradigms</span>
             <span>darth-c0d3r</span>
