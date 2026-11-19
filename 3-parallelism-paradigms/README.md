@@ -65,3 +65,52 @@ when the memory required to train a model (which includes weights, gradients, an
 during the forward pass, device-0 gets the complete mini-batch. it passes the data through its layers, and forwards the output of the final layer held by it onto the next device for the rest of the forward computation. each device will hold on to at least some of the intermediate activations (depending upon the amount of activation checkpointing used) for the gradient computation during the backward pass. the final device containing the final layers of the model will compute the loss and initiate the backpropagation. the backward pass traverses the devices in reverse order, computing the gradients as it goes and then updating the corresponding optimizer states and model weights. the intermediate activations stored on a device can be flushed as soon as the backward pass crosses it. once the pass reaches the first device, and its update completes, the system is ready for the next mini-batch.
 
 in terms of communication, there are only 2\*(n-1) send/recv operations per step. communication in model parallelism is light: only the activations at each stage boundary move forward, and the matching gradients move backward, so the volume per step is small compared to the full gradient all-reduce of data parallelism. this makes it tolerant of slower links, and it is commonly used across nodes over infiniband or ethernet. the catch is latency: the stages run strictly one after another, so each device waits on the previous one, and any transfer delay lands directly on the critical path with nothing to overlap it. data parallelism can hide its all-reduce behind the backward pass, but naive model parallelism has no such cushion. efficiency is one of the biggest drawbacks of model parallelism - at any time, only a single gpu is actively involved in computation while the others sit idle, thus capping its utilization at 1/n. this idle time is known as a pipeline bubble. a related parallelism technique called pipeline parallelism addresses this concern which we will cover soon.
+
+## pipeline parallelism
+
+pipeline parallelism builds upon model parallelism and aims to reduce the pipeline bubbles caused by gpus sitting idle. it does so by splitting a mini-batch into m micro-batches, thereby increasing throughput and device efficiency. we start with a mini-batch made up of m micro-batches (each of which could be as large as the largest batch a single gpu allows - which increases the effective batch size by a factor of m); we'll call the micro-batches b_0, b_1, ..., b_(m-1). similar to model parallelism, b_0 starts on device 0; however, as b_0 moves forward to device 1, instead of keeping device 0 idle, we start processing the next micro-batch on device 0. b_1 trails b_0 and leads other micro-batches through the stages. this ensures that between the initial ramp-up and the final cool-down, all devices are kept busy.
+
+after the first micro-batch finishes through all the stages in the forward direction, it is ready for the backward pass. however, the previous devices are still busy with the forward passes of the trailing micro-batches. we have the option of either waiting for all the forward passes to finish and then commencing the backward passes, or commencing the backward pass as soon as the forward pass finishes for a micro-batch, and handling the scheduling of the competing forward and backward passes with a pre-defined policy. the 2 strategies come from 2 commonly used scheduling protocols: `gpipe` and `1f1b` (introduced in pipe-dream).
+
+in the `gpipe` scheduling policy (introduced by google), the system waits for all the forward passes to complete before triggering the backward pass in the reverse order of micro-batches. the intermediate activations for each micro-batch are held by each device for its layers, and are freed when the backward pass for the corresponding micro-batch passes over. after all the micro-batches have been through a device, the accumulated gradients can now be used for the step update. after the update, the held gradients are zeroed as the device readies itself for the next batch. at its peak, each device holds activations for all m micro-batches in the step, which can make the gpipe scheduling memory constrained at larger number of micro-batches.
+
+by contrast, the `1f1b` scheduling policy doesn't wait for all m micro-batches to finish their forward passes, and begins the backward pass as soon as the forward pass for a micro-batch reaches the last stage. this means that at each stage, a device will have 2 jobs: one forward and one backward pass; the 1f1b policy schedules them alternately. this interweaving of forward and backward passes means that each device only has to hold a maximum of n sets of activations (instead of m, which depends on the number of micro-batches and can blow up). in doing so, this strategy relieves a critical memory constraint of the gpipe strategy, at the same efficiency.
+
+### efficiency computations
+
+#### g-pipe scheduling
+
+```python
+# number of devices = n
+# number of mini-batches = m
+
+# the data flow and usage for forward and backward passes is identical
+# so it suffices to compute efficiency for forward pass only
+
+# i-th batch starts at t = i
+# i-th batch ends at t = i + n (because there are n stages)
+# final batch, m-1, ends at t = m + n - 1 (this is the total time taken)
+
+# busy time for each device = m
+# ==> free time for each device = m + n - 1 - m = n - 1
+
+# bubble ratio = free time for a device / total time for process = (n - 1) / (m + n - 1)
+```
+
+#### 1f1b scheduling
+
+```python
+# number of devices = n
+# number of mini-batches = m
+
+# the first batch reaches the final stage at t = n - 1
+# after that, there are n sequential forward and backward passes at final device
+# ==> the final device is done with its work at t = (n - 1) + (3 * m) (1 for forward and 2 for backward pass)
+# after this, the batch goes through n-1 steps of backward passes (and is the final batch)
+# ==> job completes at t = (n - 1) + (3 * m) + (2 * (n - 1)) = 3 * (m + n - 1)
+
+# busy time for each device = 3 * m
+# ==> free time for each device = 3 * (n - 1)
+
+# bubble ratio = free time for a device / total time for process = (n - 1) / (m + n - 1)
+```

@@ -1246,6 +1246,388 @@
 
         <hr class="divider">
 
+        <section>
+            <h2>pipeline parallelism</h2>
+            <p>pipeline parallelism builds upon model parallelism and aims to reduce the pipeline bubbles caused by gpus sitting idle. it does so by splitting a mini-batch into $m$ micro-batches, thereby increasing throughput and device efficiency. we start with a mini-batch made up of $m$ micro-batches (each of which could be as large as the largest batch a single gpu allows - which increases the effective batch size by a factor of $m$); we'll call the micro-batches $b_0, b_1, \dots, b_{m-1}$. similar to model parallelism, $b_0$ starts on device 0; however, as $b_0$ moves forward to device 1, instead of keeping device 0 idle, we start processing the next micro-batch on device 0. $b_1$ trails $b_0$ and leads other micro-batches through the stages. this ensures that between the initial ramp-up and the final cool-down, all devices are kept busy.</p>
+            <p>after the first micro-batch finishes through all the stages in the forward direction, it is ready for the backward pass. however, the previous devices are still busy with the forward passes of the trailing micro-batches. we have the option of either waiting for all the forward passes to finish and then commencing the backward passes, or commencing the backward pass as soon as the forward pass finishes for a micro-batch, and handling the scheduling of the competing forward and backward passes with a pre-defined policy. the 2 strategies come from 2 commonly used scheduling protocols: <code>gpipe</code> and <code>1f1b</code> (introduced in pipe-dream).</p>
+            <p>in the <code>gpipe</code> scheduling policy (introduced by google), the system waits for all the forward passes to complete before triggering the backward pass in the reverse order of micro-batches. the intermediate activations for each micro-batch are held by each device for its layers, and are freed when the backward pass for the corresponding micro-batch passes over. after all the micro-batches have been through a device, the accumulated gradients can now be used for the step update. after the update, the held gradients are zeroed as the device readies itself for the next batch. at its peak, each device holds activations for all $m$ micro-batches in the step, which can make the gpipe scheduling memory constrained at larger number of micro-batches.</p>
+
+            <div class="gp" id="gp-root" style="margin-bottom: 24px;">
+              <style>
+                .gp { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 24px; font-family: var(--font-sans); color: var(--text-primary); }
+                .gp-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+                .gp-title { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
+                .gp-title b { color: var(--accent); font-weight: 600; }
+                .gp-ctl { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
+                .gp-ctl input { width: 56px; text-align: center; font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text-primary); background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 6px 4px; outline: none; }
+                .gp-ctl input:focus { border-color: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
+                .gp-ctl button { width: 30px; height: 30px; font-family: var(--font-mono); font-size: 15px; color: var(--accent); background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 6px; cursor: pointer; }
+                .gp-ctl button:hover { border-color: var(--accent); }
+                .gp-panel { background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px; }
+                .gp-panel svg { width: 100%; height: auto; display: block; }
+
+                .gp-row { fill: none; stroke: var(--border-subtle); stroke-width: 1; }
+                .gp-grid { stroke: rgba(255,255,255,.04); stroke-width: 1; }
+                .gp-axis { stroke: var(--border-subtle); stroke-width: 1; }
+                .gp-tick { font-family: var(--font-mono); font-size: 9px; fill: var(--text-secondary); text-anchor: middle; }
+                .gp-axis-t { font-family: var(--font-mono); font-size: 10px; fill: var(--text-secondary); text-anchor: end; }
+                .gp-gname { font-family: var(--font-mono); font-size: 11px; fill: var(--text-secondary); }
+                .gp-gsub { font-family: var(--font-mono); font-size: 9px; fill: #71717a; }
+                .gp-f { fill: var(--accent); }
+                .gp-b { fill: var(--accent-glow); stroke: var(--accent); stroke-width: 1.2; }
+                .gp-ft { font-family: var(--font-mono); font-weight: 600; fill: var(--bg-base); text-anchor: middle; }
+                .gp-bt { font-family: var(--font-mono); font-weight: 600; fill: var(--accent); text-anchor: middle; }
+                .gp-idle { fill: none; stroke: #3f3f46; stroke-dasharray: 4 3; }
+                .gp-idle-t { font-family: var(--font-mono); font-size: 10px; fill: #71717a; text-anchor: middle; }
+                .gp-bar { stroke: var(--text-secondary); stroke-width: 1; stroke-dasharray: 3 3; opacity: .7; }
+                .gp-bar-t { font-family: var(--font-mono); font-size: 9px; fill: var(--text-secondary); text-anchor: middle; }
+
+                .gp-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 16px; }
+                .gp-stat { background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px 12px; }
+                .gp-stat small { display: block; font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 4px; }
+                .gp-stat span { font-family: var(--font-mono); font-size: 14px; font-weight: 600; color: var(--text-primary); }
+                .gp-stat span.g { color: var(--accent); }
+
+                .gp-legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 14px; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); }
+                .gp-legend i { display: inline-block; width: 14px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+                .gp-legend .lf { background: var(--accent); }
+                .gp-legend .lb { background: var(--accent-glow); border: 1px solid var(--accent); }
+                .gp-legend .li { border: 1px dashed #52525b; }
+              </style>
+
+              <div class="gp-head">
+                <div class="gp-title"><b>gpipe</b> &nbsp;·&nbsp; 4 gpus &nbsp;·&nbsp; wait for all forwards, then backward in reverse</div>
+                <div class="gp-ctl">
+                  <span>micro-batches (m)</span>
+                  <button type="button" id="gp-dec" aria-label="decrease">−</button>
+                  <input id="gp-m" type="number" min="1" max="16" value="4">
+                  <button type="button" id="gp-inc" aria-label="increase">+</button>
+                </div>
+              </div>
+
+              <div class="gp-panel">
+                <svg id="gp-svg" viewBox="0 0 760 320" xmlns="http://www.w3.org/2000/svg"></svg>
+              </div>
+
+              <div class="gp-stats">
+                <div class="gp-stat"><small>step length</small><span id="gp-s1"></span></div>
+                <div class="gp-stat"><small>busy per gpu</small><span id="gp-s2"></span></div>
+                <div class="gp-stat"><small>bubble (n-1)/(m+n-1)</small><span class="g" id="gp-s3"></span></div>
+                <div class="gp-stat"><small>peak activations / gpu</small><span id="gp-s4"></span></div>
+              </div>
+
+              <div class="gp-legend">
+                <span><i class="lf"></i>F_idx · forward (1 unit)</span>
+                <span><i class="lb"></i>B_idx · backward (~2 units)</span>
+                <span><i class="li"></i>idle (pipeline bubble)</span>
+              </div>
+
+              <script>
+              (function () {
+                var root = document.getElementById('gp-root');
+                var svg = root.querySelector('#gp-svg');
+                var inp = root.querySelector('#gp-m');
+                var N = 4, X0 = 84, W = 660, BH = 48, PITCH = 64, TOP = 26;
+                function rowY(g) { return TOP + (N - 1 - g) * PITCH; }
+
+                function render() {
+                  var m = parseInt(inp.value, 10);
+                  if (isNaN(m)) m = 4;
+                  m = Math.max(1, Math.min(16, m));
+                  inp.value = m;
+
+                  var Tf = m + N - 1;            // time at which every forward pass is done
+                  var T = 3 * m + 3 * N - 3;     // total step length (fwd = 1 unit, bwd = 2 units)
+                  var U = W / T;
+                  var fsF = Math.min(10, U * 0.5), fsB = Math.min(10, U);
+                  var bottom = rowY(0) + BH;
+                  var h = '';
+
+                  // time grid and ticks
+                  var tk = T <= 20 ? 1 : (T <= 40 ? 2 : 5);
+                  for (var t = 0; t <= T; t++) {
+                    var gx = X0 + t * U;
+                    if (t % tk === 0 || t === T) {
+                      h += '<line class="gp-grid" x1="' + gx + '" y1="' + (TOP - 6) + '" x2="' + gx + '" y2="' + (bottom + 6) + '"/>';
+                      h += '<text class="gp-tick" x="' + gx + '" y="' + (bottom + 26) + '">' + t + '</text>';
+                    }
+                  }
+                  h += '<line class="gp-axis" x1="' + X0 + '" y1="' + (bottom + 10) + '" x2="' + (X0 + W) + '" y2="' + (bottom + 10) + '"/>';
+                  h += '<text class="gp-axis-t" x="' + (X0 + W) + '" y="' + (bottom + 46) + '">time →</text>';
+
+                  // rows and labels
+                  for (var g = 0; g < N; g++) {
+                    h += '<rect class="gp-row" x="' + X0 + '" y="' + rowY(g) + '" width="' + W + '" height="' + BH + '" rx="6"/>';
+                    h += '<text class="gp-gname" x="8" y="' + (rowY(g) + 21) + '">GPU ' + g + '</text>';
+                    h += '<text class="gp-gsub" x="8" y="' + (rowY(g) + 35) + '">layers ' + (3 * g) + '–' + (3 * g + 2) + '</text>';
+                  }
+
+                  // schedule
+                  for (g = 0; g < N; g++) {
+                    var iv = [], i, k;
+                    for (i = 0; i < m; i++) iv.push([i + g, i + g + 1, 'f', i]);                       // forward of micro-batch i on stage g
+                    for (k = 0; k < m; k++) {                                                          // backward in reverse micro-batch order
+                      var s = Tf + 2 * k + 2 * (N - 1 - g);
+                      iv.push([s, s + 2, 'b', m - 1 - k]);
+                    }
+                    iv.sort(function (a, b) { return a[0] - b[0]; });
+
+                    var cur = 0, y = rowY(g), gaps = [];
+                    for (i = 0; i < iv.length; i++) {
+                      if (iv[i][0] > cur) gaps.push([cur, iv[i][0]]);
+                      cur = iv[i][1];
+                    }
+                    if (cur < T) gaps.push([cur, T]);
+
+                    for (i = 0; i < gaps.length; i++) {
+                      var a = gaps[i][0], b = gaps[i][1];
+                      h += '<rect class="gp-idle" x="' + (X0 + a * U + 1) + '" y="' + (y + 3) + '" width="' + ((b - a) * U - 2) + '" height="' + (BH - 6) + '" rx="5"/>';
+                      if ((b - a) * U >= 40) h += '<text class="gp-idle-t" x="' + (X0 + (a + b) / 2 * U) + '" y="' + (y + BH / 2 + 4) + '">idle</text>';
+                    }
+                    for (i = 0; i < iv.length; i++) {
+                      var p = iv[i], isF = p[2] === 'f';
+                      var bx = X0 + p[0] * U + 1, bw = (p[1] - p[0]) * U - 2;
+                      h += '<rect class="' + (isF ? 'gp-f' : 'gp-b') + '" x="' + bx + '" y="' + y + '" width="' + bw + '" height="' + BH + '" rx="5"/>';
+                      var fs = isF ? fsF : fsB;
+                      if (fs >= 5.5) {
+                        h += '<text class="' + (isF ? 'gp-ft' : 'gp-bt') + '" style="font-size:' + fs + 'px" x="' + (bx + bw / 2) + '" y="' + (y + BH / 2 + fs * 0.35) + '">' + (isF ? 'F' : 'B') + p[3] + '</text>';
+                      }
+                    }
+                  }
+
+                  // barrier: all forwards done, backward may begin
+                  var bxl = X0 + Tf * U;
+                  h += '<line class="gp-bar" x1="' + bxl + '" y1="' + (TOP - 8) + '" x2="' + bxl + '" y2="' + (bottom + 6) + '"/>';
+                  h += '<text class="gp-bar-t" x="' + bxl + '" y="' + (TOP - 12) + '">all forwards done</text>';
+
+                  svg.innerHTML = h;
+
+                  root.querySelector('#gp-s1').textContent = T + ' units';
+                  root.querySelector('#gp-s2').textContent = (3 * m) + ' of ' + T;
+                  root.querySelector('#gp-s3').textContent = ((N - 1) / (m + N - 1) * 100).toFixed(1) + '%';
+                  root.querySelector('#gp-s4').textContent = m + (m === 1 ? ' micro-batch' : ' micro-batches');
+                }
+
+                inp.addEventListener('input', render);
+                inp.addEventListener('change', render);
+                root.querySelector('#gp-dec').addEventListener('click', function () { inp.value = (parseInt(inp.value, 10) || 4) - 1; render(); });
+                root.querySelector('#gp-inc').addEventListener('click', function () { inp.value = (parseInt(inp.value, 10) || 4) + 1; render(); });
+                render();
+              })();
+              </script>
+            </div>
+
+            <p>by contrast, the <code>1f1b</code> scheduling policy doesn't wait for all $m$ micro-batches to finish their forward passes, and begins the backward pass as soon as the forward pass for a micro-batch reaches the last stage. this means that at each stage, a device will have 2 jobs: one forward and one backward pass; the 1f1b policy schedules them alternatively. this interweaving of forward and backward passes means that each device only has to hold a maximum of $n$ sets of activations (instead of $m$, which depends on the number of micro-batches and can blow up). in doing so, this strategy relieves a critical memory constraint of the gpipe strategy, at the same efficiency.</p>
+
+            <div class="fb" id="fb-root">
+              <style>
+                .fb { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 24px; font-family: var(--font-sans); color: var(--text-primary); }
+                .fb-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+                .fb-title { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
+                .fb-title b { color: var(--accent); font-weight: 600; }
+                .fb-ctl { display: flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
+                .fb-ctl input { width: 56px; text-align: center; font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text-primary); background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 6px 4px; outline: none; }
+                .fb-ctl input:focus { border-color: var(--accent); box-shadow: 0 0 10px var(--accent-glow); }
+                .fb-ctl button { width: 30px; height: 30px; font-family: var(--font-mono); font-size: 15px; color: var(--accent); background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 6px; cursor: pointer; }
+                .fb-ctl button:hover { border-color: var(--accent); }
+                .fb-panel { background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px; }
+                .fb-panel svg { width: 100%; height: auto; display: block; }
+
+                .fb-row { fill: none; stroke: var(--border-subtle); stroke-width: 1; }
+                .fb-grid { stroke: rgba(255,255,255,.04); stroke-width: 1; }
+                .fb-axis { stroke: var(--border-subtle); stroke-width: 1; }
+                .fb-tick { font-family: var(--font-mono); font-size: 9px; fill: var(--text-secondary); text-anchor: middle; }
+                .fb-axis-t { font-family: var(--font-mono); font-size: 10px; fill: var(--text-secondary); text-anchor: end; }
+                .fb-gname { font-family: var(--font-mono); font-size: 11px; fill: var(--text-secondary); }
+                .fb-gsub { font-family: var(--font-mono); font-size: 9px; fill: #71717a; }
+                .fb-f { fill: var(--accent); }
+                .fb-b { fill: var(--accent-glow); stroke: var(--accent); stroke-width: 1.2; }
+                .fb-ft { font-family: var(--font-mono); font-weight: 600; fill: var(--bg-base); text-anchor: middle; }
+                .fb-bt { font-family: var(--font-mono); font-weight: 600; fill: var(--accent); text-anchor: middle; }
+                .fb-idle { fill: none; stroke: #3f3f46; stroke-dasharray: 4 3; }
+                .fb-idle-t { font-family: var(--font-mono); font-size: 10px; fill: #71717a; text-anchor: middle; }
+
+                .fb-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 16px; }
+                .fb-stat { background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px 12px; }
+                .fb-stat small { display: block; font-family: var(--font-mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 4px; }
+                .fb-stat span { font-family: var(--font-mono); font-size: 14px; font-weight: 600; color: var(--text-primary); }
+                .fb-stat span.g { color: var(--accent); }
+                .fb-stat em { display: block; font-style: normal; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); margin-top: 3px; }
+
+                .fb-legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 14px; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); }
+                .fb-legend i { display: inline-block; width: 14px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+                .fb-legend .lf { background: var(--accent); }
+                .fb-legend .lb { background: var(--accent-glow); border: 1px solid var(--accent); }
+                .fb-legend .li { border: 1px dashed #52525b; }
+              </style>
+
+              <div class="fb-head">
+                <div class="fb-title"><b>1f1b</b> &nbsp;·&nbsp; 4 gpus &nbsp;·&nbsp; warm-up, then alternate forward and backward</div>
+                <div class="fb-ctl">
+                  <span>micro-batches (m)</span>
+                  <button type="button" id="fb-dec" aria-label="decrease">−</button>
+                  <input id="fb-m" type="number" min="1" max="16" value="8">
+                  <button type="button" id="fb-inc" aria-label="increase">+</button>
+                </div>
+              </div>
+
+              <div class="fb-panel">
+                <svg id="fb-svg" viewBox="0 0 760 320" xmlns="http://www.w3.org/2000/svg"></svg>
+              </div>
+
+              <div class="fb-stats">
+                <div class="fb-stat"><small>step length</small><span id="fb-s1"></span></div>
+                <div class="fb-stat"><small>busy per gpu</small><span id="fb-s2"></span></div>
+                <div class="fb-stat"><small>bubble (n-1)/(m+n-1)</small><span class="g" id="fb-s3"></span></div>
+                <div class="fb-stat"><small>peak activations<br>gpu 0</small><span class="g" id="fb-s4"></span><em id="fb-s5"></em></div>
+              </div>
+
+              <div class="fb-legend">
+                <span><i class="lf"></i>F_idx · forward (1 unit)</span>
+                <span><i class="lb"></i>B_idx · backward (~2 units)</span>
+                <span><i class="li"></i>idle (pipeline bubble)</span>
+              </div>
+
+              <script>
+              (function () {
+                var root = document.getElementById('fb-root');
+                var svg = root.querySelector('#fb-svg');
+                var inp = root.querySelector('#fb-m');
+                var N = 4, X0 = 84, W = 660, BH = 48, PITCH = 64, TOP = 26;
+                function rowY(g) { return TOP + (N - 1 - g) * PITCH; }
+
+                // simulate the 1F1B schedule: per-device op order + dependencies
+                function schedule(m) {
+                  var ops = [], ptr = [], free = [], endF = [], endB = [], res = [], g, i, k;
+                  for (g = 0; g < N; g++) {
+                    var warm = Math.min(m, N - g), list = [];
+                    for (i = 0; i < warm; i++) list.push(['f', i]);
+                    for (k = 0; k < m - warm; k++) { list.push(['b', k]); list.push(['f', warm + k]); }
+                    for (i = m - warm; i < m; i++) list.push(['b', i]);
+                    ops.push(list); ptr.push(0); free.push(0); endF.push([]); endB.push([]); res.push([]);
+                  }
+                  var progress = true;
+                  while (progress) {
+                    progress = false;
+                    for (g = 0; g < N; g++) {
+                      while (ptr[g] < ops[g].length) {
+                        var o = ops[g][ptr[g]], dep;
+                        if (o[0] === 'f') dep = g === 0 ? 0 : endF[g - 1][o[1]];
+                        else dep = g === N - 1 ? endF[g][o[1]] : endB[g + 1][o[1]];
+                        if (dep === undefined) break;
+                        var start = Math.max(free[g], dep), dur = o[0] === 'f' ? 1 : 2;
+                        res[g].push([start, start + dur, o[0], o[1]]);
+                        free[g] = start + dur;
+                        if (o[0] === 'f') endF[g][o[1]] = start + dur; else endB[g][o[1]] = start + dur;
+                        ptr[g]++; progress = true;
+                      }
+                    }
+                  }
+                  return res;
+                }
+
+                function render() {
+                  var m = parseInt(inp.value, 10);
+                  if (isNaN(m)) m = 8;
+                  m = Math.max(1, Math.min(16, m));
+                  inp.value = m;
+
+                  var res = schedule(m), T = 0, g, i;
+                  for (g = 0; g < N; g++) T = Math.max(T, res[g][res[g].length - 1][1]);
+                  var U = W / T;
+                  var fsF = Math.min(10, U * 0.5), fsB = Math.min(10, U);
+                  var bottom = rowY(0) + BH;
+                  var h = '';
+
+                  var tk = T <= 20 ? 1 : (T <= 40 ? 2 : 5);
+                  for (var t = 0; t <= T; t++) {
+                    var gx = X0 + t * U;
+                    if (t % tk === 0 || t === T) {
+                      h += '<line class="fb-grid" x1="' + gx + '" y1="' + (TOP - 6) + '" x2="' + gx + '" y2="' + (bottom + 6) + '"/>';
+                      h += '<text class="fb-tick" x="' + gx + '" y="' + (bottom + 26) + '">' + t + '</text>';
+                    }
+                  }
+                  h += '<line class="fb-axis" x1="' + X0 + '" y1="' + (bottom + 10) + '" x2="' + (X0 + W) + '" y2="' + (bottom + 10) + '"/>';
+                  h += '<text class="fb-axis-t" x="' + (X0 + W) + '" y="' + (bottom + 46) + '">time →</text>';
+
+                  for (g = 0; g < N; g++) {
+                    h += '<rect class="fb-row" x="' + X0 + '" y="' + rowY(g) + '" width="' + W + '" height="' + BH + '" rx="6"/>';
+                    h += '<text class="fb-gname" x="8" y="' + (rowY(g) + 21) + '">GPU ' + g + '</text>';
+                    h += '<text class="fb-gsub" x="8" y="' + (rowY(g) + 35) + '">layers ' + (3 * g) + '–' + (3 * g + 2) + '</text>';
+                  }
+
+                  var peaks = [];
+                  for (g = 0; g < N; g++) {
+                    var iv = res[g], y = rowY(g), cur = 0, gaps = [], inflight = 0, peak = 0;
+                    for (i = 0; i < iv.length; i++) {
+                      if (iv[i][0] > cur) gaps.push([cur, iv[i][0]]);
+                      cur = iv[i][1];
+                      if (iv[i][2] === 'f') { inflight++; if (inflight > peak) peak = inflight; } else inflight--;
+                    }
+                    if (cur < T) gaps.push([cur, T]);
+                    peaks.push(peak);
+
+                    for (i = 0; i < gaps.length; i++) {
+                      var a = gaps[i][0], b = gaps[i][1];
+                      h += '<rect class="fb-idle" x="' + (X0 + a * U + 1) + '" y="' + (y + 3) + '" width="' + ((b - a) * U - 2) + '" height="' + (BH - 6) + '" rx="5"/>';
+                      if ((b - a) * U >= 40) h += '<text class="fb-idle-t" x="' + (X0 + (a + b) / 2 * U) + '" y="' + (y + BH / 2 + 4) + '">idle</text>';
+                    }
+                    for (i = 0; i < iv.length; i++) {
+                      var p = iv[i], isF = p[2] === 'f';
+                      var bx = X0 + p[0] * U + 1, bw = (p[1] - p[0]) * U - 2;
+                      h += '<rect class="' + (isF ? 'fb-f' : 'fb-b') + '" x="' + bx + '" y="' + y + '" width="' + bw + '" height="' + BH + '" rx="5"/>';
+                      var fs = isF ? fsF : fsB;
+                      if (fs >= 5.5) {
+                        h += '<text class="' + (isF ? 'fb-ft' : 'fb-bt') + '" style="font-size:' + fs + 'px" x="' + (bx + bw / 2) + '" y="' + (y + BH / 2 + fs * 0.35) + '">' + (isF ? 'F' : 'B') + p[3] + '</text>';
+                      }
+                    }
+                  }
+                  svg.innerHTML = h;
+
+                  root.querySelector('#fb-s1').textContent = T + ' units';
+                  root.querySelector('#fb-s2').textContent = (3 * m) + ' of ' + T;
+                  root.querySelector('#fb-s3').textContent = ((1 - 3 * m / T) * 100).toFixed(1) + '%';
+                  root.querySelector('#fb-s4').textContent = peaks[0] + (peaks[0] === 1 ? ' micro-batch' : ' micro-batches');
+                  root.querySelector('#fb-s5').innerHTML = 'gpu 0→3: ' + peaks.join(' / ') + '<br>gpipe: ' + m;
+                }
+
+                inp.addEventListener('input', render);
+                inp.addEventListener('change', render);
+                root.querySelector('#fb-dec').addEventListener('click', function () { inp.value = (parseInt(inp.value, 10) || 8) - 1; render(); });
+                root.querySelector('#fb-inc').addEventListener('click', function () { inp.value = (parseInt(inp.value, 10) || 8) + 1; render(); });
+                render();
+              })();
+              </script>
+            </div>
+
+            <section>
+                <h3>efficiency computations</h3>
+
+                <h4>g-pipe scheduling</h4>
+                <p>the data flow and usage for forward and backward passes is identical, so it suffices to compute efficiency for the forward pass only. consider $n$ devices and $m$ micro-batches:</p>
+                <ul>
+                    <li>the $i$-th micro-batch starts at $t = i$.</li>
+                    <li>the $i$-th micro-batch ends at $t = i + n$ (because there are $n$ stages).</li>
+                    <li>the final micro-batch ($m-1$) ends at $t = m + n - 1$ (this is the total time taken for the forward pass).</li>
+                </ul>
+                <p>busy time for each device is $m$, so free time for each device is $(m + n - 1) - m = n - 1$. thus, the bubble ratio is:</p>
+                <p>$$\text{bubble ratio} = \frac{\text{free time}}{\text{total time}} = \frac{n - 1}{m + n - 1}$$</p>
+
+                <h4>1f1b scheduling</h4>
+                <p>in the 1f1b schedule with $n$ devices and $m$ micro-batches:</p>
+                <ul>
+                    <li>the first micro-batch reaches the final stage at $t = n - 1$.</li>
+                    <li>after that, there are $n$ sequential forward and backward passes at the final device, meaning the final device is done with its work at $t = (n - 1) + 3m$ (1 unit for forward and 2 units for backward pass).</li>
+                    <li>after this, the batch goes through $n-1$ steps of backward passes, ending at $t = 3(m + n - 1)$.</li>
+                </ul>
+                <p>busy time for each device is $3m$, and free time for each device is $3(n - 1)$. the bubble ratio matches gpipe:</p>
+                <p>$$\text{bubble ratio} = \frac{3(n - 1)}{3(m + n - 1)} = \frac{n - 1}{m + n - 1}$$</p>
+            </section>
+
+        </section>
+
+        <hr class="divider">
+
         <footer>
             <span>on distributed training & inference paradigms</span>
             <span>darth-c0d3r</span>
