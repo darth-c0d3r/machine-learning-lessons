@@ -114,3 +114,11 @@ by contrast, the `1f1b` scheduling policy doesn't wait for all m micro-batches t
 
 # bubble ratio = free time for a device / total time for process = (n - 1) / (m + n - 1)
 ```
+
+## tensor parallelism
+
+where model parallelism splits the model horizontally, tensor parallelism takes the orthogonal route and splits the model vertically: the weights of each layer are sharded and distributed. for example, a weight matrix with $n\*k$ rows or columns can be partitioned along either axis into $n$ shards, which can be stored on the $n$ devices on hand. each device holds a part of weights from every layer. when a mini-batch arrives, all the devices get engaged simultaneously in computing their part of the activations. the backward pass works the same way: each device contributes to the computation of a part of the resultant tensor. because all devices engage at the same time, tensor parallelism alleviates the bubble problem from pipeline parallelism. this is of course, an over-generalized introduction; we'll cover the details over due course.
+
+### distributed matrix multiplication 
+
+distributed matrix multiplication is the building block of tensor parallelism: with the weights distributed across devices, we need an algorithm for efficient multiplication of the input tensor with the entire weights of a layer. 
