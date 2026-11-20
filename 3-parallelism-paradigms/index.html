@@ -1965,6 +1965,150 @@
               </div>
             </div>
 
+            <h3>tensor parallelism in attention layer</h3>
+            <p>we can use similar principles with the goal of minimizing communication to design the workflow for the attention layer. let's break down the steps:</p>
+            <ol>
+                <li>the input tensor <code>X</code> of shape <code>batch_size, seq_len, d</code> is projected to get <code>K, Q, V</code> tensors. the projection matrices <code>W_Q, W_Q, W_V</code> are of the shape <code>d, num_heads * d_head</code> each.</li>
+                <li>the <code>K, Q, V</code> tensors are reshaped to get individual tensors for each head; shape = <code>batch_size, seq_len, num_heads, d_head</code></li>
+                <li>the scaled dot product attention function is applied together to the whole tensor, but mathematically, independently on each head: <code>X' = softmax(Q K^T / \sqrt{d_head}) V</code>: which gives the tensor <code>X'</code> of shape <code>batch_size, seq_len, num_heads, d_head</code>.</li>
+                <li>this resultant tensor is reshaped and projected to the model dimension again with a projection matrix <code>W_O</code> of shape <code>num_heads * d_head, d</code></li>
+                <li>this gets us the output tensor <code>Y</code> of shape <code>batch_size, seq_len, d</code> again.</li>
+            </ol>
+            <p>the fact that the computations for each head are independent signals towards column parallel which splits the output and keeps the input intact. we split the <code>W_K, W_Q, W_V</code> projection matrices across columns, which means the weights for some heads reside on one device and other heads on another device and so on (this means the number of heads should be divisible by the number of devices). from there on, the entire attention function can be applied independently, and each device will have a part of the intermediate tensor <code>X'</code> of shape <code>batch_size, seq_len, num_heads_per_device, d_head</code>. this neatly ties into the row parallel paradigm where the output projection matrix <code>W_O</code> is split along rows to accept a split input and outputs a full-size partial sum matrix which is collected using the all-reduce primitive. thus, we can compute the entire attention function, including projections, attention scores, soft-max, and final projections with a single all-reduce communication at the end.</p>
+            <p>a decoder-only transformer layer thus needs two all-reduces in the forward pass, one after attention and one after the ffn. note that not all operations can be neatly divided. for some operations like layer norms, the activations and weights are replicated across devices, with duplicated memory and compute. these operations are smaller in comparison to the larger distributed operations, though their replicated activations still add up in memory.</p>
+
+            <div class="attn">
+              <style>
+                .attn { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 24px; font-family: var(--font-sans); color: var(--text-primary); }
+                .attn-title { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 16px; }
+                .attn-title b { color: var(--accent); font-weight: 600; }
+                .attn-panel { background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px; }
+                .attn-panel svg { width: 100%; height: auto; display: block; }
+
+                .attn-in { fill: #3f3f46; }
+                .attn-part { fill: var(--accent-glow); stroke: var(--accent); stroke-width: 1.2; }
+                .attn-full { fill: var(--accent); }
+                .attn-name { font-family: var(--font-mono); font-size: 17px; font-weight: 600; fill: var(--text-primary); text-anchor: middle; }
+                .attn-name.g { fill: var(--accent); }
+                .attn-name.d { fill: var(--bg-base); }
+                .attn-dim { font-family: var(--font-mono); font-size: 13px; fill: var(--text-secondary); text-anchor: middle; }
+                .attn-op { font-family: var(--font-mono); font-size: 28px; fill: var(--text-secondary); text-anchor: middle; }
+                .attn-cap { font-family: var(--font-mono); font-size: 13px; fill: var(--text-secondary); text-anchor: middle; }
+                .attn-cap.g { fill: var(--accent); }
+                .attn-cap.a { fill: #f59e0b; }
+                .attn-split { stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 4 3; opacity: .8; }
+                .attn-skip { fill: none; stroke: #f59e0b; stroke-width: 1.2; stroke-dasharray: 4 3; opacity: .9; }
+                .attn-join { stroke: var(--accent); stroke-width: 1.3; fill: none; opacity: .8; }
+                .attn-arr { stroke: var(--accent); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; animation: attn-flow 1s linear infinite; }
+                .attn-rep { stroke: var(--text-secondary); stroke-width: 1.3; fill: none; stroke-dasharray: 5 4; animation: attn-flow 1s linear infinite; }
+                .attn-head-g { fill: var(--accent); }
+                .attn-head-s { fill: var(--text-secondary); }
+                @keyframes attn-flow { to { stroke-dashoffset: -9; } }
+
+                .attn-legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 14px; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); }
+                .attn-legend i { display: inline-block; width: 14px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+                .attn-legend .li { background: #3f3f46; }
+                .attn-legend .lp { background: var(--accent-glow); border: 1px solid var(--accent); }
+                .attn-legend .lf { background: var(--accent); }
+                .attn-legend .ls { border: 1px dashed #f59e0b; }
+              </style>
+
+              <div class="attn-title"><b>tensor parallelism in attention</b> &nbsp;·&nbsp; heads split across shards &nbsp;·&nbsp; 2-way</div>
+
+              <div class="attn-panel">
+                <svg viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg">
+                  <defs>
+                    <marker id="attn-mk-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="attn-head-g" d="M0 0L10 5L0 10z"/></marker>
+                    <marker id="attn-mk-s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="attn-head-s" d="M0 0L10 5L0 10z"/></marker>
+                  </defs>
+
+                  <!-- column captions -->
+                  <text class="attn-cap" x="44" y="40">replicated</text>
+                  <text class="attn-cap g" x="175" y="40">column parallel</text>
+                  <text class="attn-cap" x="303" y="40">attention</text>
+                  <text class="attn-cap g" x="537" y="40">row parallel</text>
+                  <text class="attn-cap" x="661" y="40">partial sums</text>
+                  <text class="attn-cap" x="846" y="40">full output</text>
+
+                  <!-- input X, available on both shards -->
+                  <rect class="attn-in" x="14" y="130" width="60" height="80" rx="6"/>
+                  <text class="attn-name" x="44" y="176">X</text>
+                  <path class="attn-rep" d="M78 170 H98 V110 H116" marker-end="url(#attn-mk-s)"/>
+                  <path class="attn-rep" d="M98 170 V230 H116" marker-end="url(#attn-mk-s)"/>
+
+                  <!-- Q, K, V projection shards (column split on head boundaries) -->
+                  <rect class="attn-in" x="120" y="75"  width="110" height="70" rx="6"/>
+                  <text class="attn-name" x="175" y="115">W_qkv_0</text>
+                  <rect class="attn-in" x="120" y="195" width="110" height="70" rx="6"/>
+                  <text class="attn-name" x="175" y="235">W_qkv_1</text>
+                  <line class="attn-split" x1="108" y1="170" x2="242" y2="170"/>
+
+                  <line class="attn-arr" x1="234" y1="110" x2="254" y2="110" marker-end="url(#attn-mk-g)"/>
+                  <line class="attn-arr" x1="234" y1="230" x2="254" y2="230" marker-end="url(#attn-mk-g)"/>
+
+                  <!-- per-shard attention over its own heads -->
+                  <rect class="attn-part" x="258" y="75"  width="90" height="70" rx="6"/>
+                  <text class="attn-name g" x="303" y="105">attn</text>
+                  <text class="attn-dim" x="303" y="128">heads 0–1</text>
+                  <rect class="attn-part" x="258" y="195" width="90" height="70" rx="6"/>
+                  <text class="attn-name g" x="303" y="225">attn</text>
+                  <text class="attn-dim" x="303" y="248">heads 2–3</text>
+
+                  <!-- shards stay local; the all-gather is skipped -->
+                  <line class="attn-arr" x1="352" y1="110" x2="478" y2="110" marker-end="url(#attn-mk-g)"/>
+                  <line class="attn-arr" x1="352" y1="230" x2="478" y2="230" marker-end="url(#attn-mk-g)"/>
+                  <rect class="attn-skip" x="360" y="148" width="112" height="44" rx="6"/>
+                  <text class="attn-cap a" x="416" y="166">✕ all-gather</text>
+                  <text class="attn-cap a" x="416" y="184">skipped</text>
+
+                  <!-- output projection shards (row split) -->
+                  <rect class="attn-in" x="482" y="75"  width="110" height="70" rx="6"/>
+                  <text class="attn-name" x="537" y="115">W_O_0</text>
+                  <rect class="attn-in" x="482" y="195" width="110" height="70" rx="6"/>
+                  <text class="attn-name" x="537" y="235">W_O_1</text>
+                  <line class="attn-split" x1="470" y1="170" x2="604" y2="170"/>
+
+                  <line class="attn-arr" x1="596" y1="110" x2="622" y2="110" marker-end="url(#attn-mk-g)"/>
+                  <line class="attn-arr" x1="596" y1="230" x2="622" y2="230" marker-end="url(#attn-mk-g)"/>
+
+                  <!-- partial sums -->
+                  <rect class="attn-part" x="626" y="75"  width="70" height="70" rx="6"/>
+                  <text class="attn-name g" x="661" y="115">P_0</text>
+                  <rect class="attn-part" x="626" y="195" width="70" height="70" rx="6"/>
+                  <text class="attn-name g" x="661" y="235">P_1</text>
+                  <text class="attn-op" x="661" y="179">+</text>
+
+                  <!-- merge into the single all-reduce -->
+                  <path class="attn-join" d="M700 110 H714 V170"/>
+                  <path class="attn-join" d="M700 230 H714 V170"/>
+                  <line class="attn-arr" x1="714" y1="170" x2="800" y2="170" marker-end="url(#attn-mk-g)"/>
+                  <text class="attn-cap g" x="760" y="156">all-reduce</text>
+                  <text class="attn-cap" x="760" y="192">sum</text>
+
+                  <!-- full output -->
+                  <rect class="attn-full" x="806" y="130" width="80" height="80" rx="6"/>
+                  <text class="attn-name d" x="846" y="176">Y</text>
+
+                  <!-- shapes (tokens = batch × seq_len, H = num_heads · d_head) -->
+                  <text class="attn-dim" x="44"  y="300">tokens × d</text>
+                  <text class="attn-dim" x="175" y="300">d × H/2</text>
+                  <text class="attn-dim" x="303" y="300">tokens × H/2</text>
+                  <text class="attn-dim" x="537" y="300">H/2 × d</text>
+                  <text class="attn-dim" x="661" y="300">tokens × d</text>
+                  <text class="attn-dim" x="846" y="300">tokens × d</text>
+                </svg>
+              </div>
+
+              <div class="attn-legend">
+                <span><i class="li"></i>input / weights</span>
+                <span><i class="lp"></i>per-shard result</span>
+                <span><i class="lf"></i>after all-reduce (full output)</span>
+                <span><i class="ls"></i>communication removed</span>
+              </div>
+            </div>
+
+            <h3>closing remarks on tensor parallelism</h3>
+            <p>i like to view tensor parallelism as stitching together the devices and then just viewing them as a single unit, with increased memory, albeit at some added communication cost. for writing high level functions, this interpretation generally suffices. in terms of communication, tensor parallelism has at least 2 collectives per transformer layer in the forward pass (and 2 more in the backward pass), compared to pipeline parallelism’s point-to-point transfers at stage boundaries. tensor parallelism’s data transfers also sit on the critical path and are much harder to hide behind computation, which means they’re a real cost in time. this makes tensor parallelism particularly sensitive to channel bandwidth, and it is usually only suitable on high-bandwidth nv-link, which in practice limits it to the gpus within a single node (typically 8).</p>
         </section>
 
         <hr class="divider">
