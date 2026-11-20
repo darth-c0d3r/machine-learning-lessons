@@ -121,4 +121,16 @@ where model parallelism splits the model horizontally, tensor parallelism takes 
 
 ### distributed matrix multiplication 
 
-distributed matrix multiplication is the building block of tensor parallelism: with the weights distributed across devices, we need an algorithm for efficient multiplication of the input tensor with the entire weights of a layer. 
+distributed matrix multiplication is the building block of tensor parallelism: with the weights distributed across devices, we need an algorithm for efficient multiplication of an input tensor with the entire weights of a layer. we can either split the weight matrices by rows or by columns. let's walk through both cases with a simple illustrating example of a 2-way split across 2 participating devices.
+
+#### column parallel
+
+take the case of an input matrix `x`, of shape `batch_size, d1`. the full projection matrix is of shape `d1, 2*d2` (since we want to split it along the columns, it is convenient to denote the shape as a factor of device count). the matrix is going to be split across 2 devices, with each getting a shard `w_i` of shape `d1, d2`. the input matrix `x` is copied to both devices in parallel and each device computes a part of the final matrix of shape `batch_size, d2`. the final matrix is then obtained by running the all-gather primitive along the split dimension to get the final matrix of shape `batch_size, 2*d2`.
+
+#### row parallel
+
+the script is flipped for row parallel: while we split the weights in the output dimension for column parallel, we'll split the weights in the input dimension here. the input matrix `x`, will have the shape `batch_size, 2*d1` and the projection matrix will have the shape `2*d1, d2`. splitting the weights along the rows will leave each device with a shard of shape `d1, d2`. in this case, the input tensor `x` will also be split, and each device will get a part of the input tensor of shape `batch_size, d1`. each device running its matrix multiplication will provide an output of shape `batch_size, d2`: a tensor of the correct output shape, but each element is only a partial-sum, missing the element-wise sums from other devices. to get the final resultant tensor, we run the all-reduce primitive and sum the elements of output from each device.
+
+### tensor parallelism in ffn layer
+
+both row and column parallel techniques split the computation evenly across devices, but they differ in communication: column parallel needs an all-gather, and row parallel needs an all-reduce (which moves twice the data). however, they come together elegantly in the feed-forward network layer of transformers. recall that the feed-forward layer is composed of 2 sequential dense layers: an up-projection followed by a down-projection. note that the output from column parallel is split along the output dimension, which is precisely the format required at the input of row parallel. the activation function between the two layers is element-wise, so each device can apply it to its own shard without any communication. having the up-projection served by a column parallel layer followed by a row parallel down-projection removes the need for the all-gather in the middle, leaving a single all-reduce per feed-forward layer instead of two collectives.
