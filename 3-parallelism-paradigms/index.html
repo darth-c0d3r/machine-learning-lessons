@@ -2113,6 +2113,156 @@
 
         <hr class="divider">
 
+        <section>
+            <h2>parallelism on massive scale: 3d parallelism</h2>
+
+            <p>depending on the hardware configuration and layout, and particularly for smaller models (&lt; 10B parameters), any single parallelism paradigm can be adopted independently. however, large frontier-scale models are trained on massive compute clusters, where some nodes may be connected through high-throughput interconnects, while others are separated by slower links across racks or pods. training at such scale requires combining multiple parallelism strategies, along with careful systems engineering.</p>
+
+            <p>as a motivating example, let's consider a 500B dense model, which is roughly comparable in scale to smaller frontier models. mixed-precision training with the adam optimizer would require approximately <code>500 * 18 = 9000 GB = 9 TB</code> of memory (about 18 bytes per parameter: bf16 weights, plus fp32 master weights, gradients and adam moments; some setups need closer to 16). a single node with 8 h100 gpus provides only <code>80 * 8 = 640 GB = 0.64 TB</code> of HBM, which is clearly insufficient. this doesn't even account for activations, which scale with sequence length and can themselves consume substantial memory, particularly for long sequences.</p>
+
+            <p>we cannot even fit the model entirely within a single node using tensor parallelism: we would need about 14 such nodes just for the model state. extending tensor parallelism across nodes, however, would introduce prohibitively high communication overhead. furthermore, for very large models, even a single transformer layer can exceed the memory of an individual device (a 500B model with 50 layers has about 10B parameters per layer, or roughly 180 GB of training state), necessitating additional partitioning within layers alongside pipeline parallelism. relying solely on pipeline parallelism would also leave the high-bandwidth intra-node interconnects underutilized, and would need many stages and many micro-batches to keep the pipeline bubble small.</p>
+
+            <p>this leads us to a natural strategy: apply tensor parallelism to split individual layers across devices within a node. multiple such groups of devices can then be connected using pipeline parallelism, with each group hosting a different set of layers. recall that communication within a node is facilitated through nv-link interconnects, which offer significantly higher bandwidth, whereas inter-node communication typically relies on infiniband or ethernet, depending on the underlying infrastructure, and is comparatively slower. finally, this entire setup can be replicated across multiple groups to scale throughput and the global batch size through data parallelism, with replicas communicating gradients across the data-parallel dimension (in practice, often combined with sharding techniques like zero/fsdp rather than plain replication). this three-dimensional parallelism strategy is commonly referred to as 3D parallelism.</p>
+
+            <p>in summary, the rule is to put the most communication-hungry strategy on the fastest links:</p>
+            <ul>
+                <li><b>tensor parallelism (tp)</b>: splits individual layers across gpus within a node (nvlink).</li>
+                <li><b>pipeline parallelism (pp)</b>: splits the model's layers across groups of gpus/nodes (point-to-point, tolerates slower links).</li>
+                <li><b>data parallelism (dp)</b>: replicates (or shards) the model across multiple such groups, and syncs gradients once per step.</li>
+            </ul>
+
+            <p>the total number of gpus is tp &times; pp &times; dp. for example, tp=8, pp=16 and dp=4 gives 512 gpus. note that 3d is the classic baseline: frontier models often add further dimensions such as expert parallelism and sequence/context parallelism, which we will cover later.</p>
+
+            <div class="td">
+              <style>
+                .td { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 14px; padding: 24px; font-family: var(--font-sans); color: var(--text-primary); }
+                .td-title { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 16px; }
+                .td-title b { color: var(--accent); font-weight: 600; }
+                .td-panel { background: var(--bg-base); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px; }
+                .td-panel svg { width: 100%; height: auto; display: block; }
+
+                .td-node { fill: var(--bg-surface); stroke: var(--border-subtle); stroke-width: 1; }
+                .td-node.e { stroke: #52525b; stroke-dasharray: 4 3; fill: none; }
+                .td-gpu { fill: var(--accent-glow); stroke: var(--accent); stroke-width: 1.2; }
+                .td-name { font-family: var(--font-mono); font-size: 17px; font-weight: 600; fill: var(--text-primary); text-anchor: middle; }
+                .td-name.g { fill: var(--accent); }
+                .td-cap { font-family: var(--font-mono); font-size: 13px; fill: var(--text-secondary); text-anchor: middle; }
+                .td-cap.g { fill: var(--accent); }
+                .td-cap.l { text-anchor: start; }
+                .td-op { font-family: var(--font-mono); font-size: 28px; fill: var(--text-secondary); text-anchor: middle; }
+                .td-pp { stroke: var(--accent); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; animation: td-flow 1s linear infinite; }
+                .td-dp { stroke: var(--text-secondary); stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; animation: td-flow 1s linear infinite; }
+                .td-head-g { fill: var(--accent); }
+                .td-head-s { fill: var(--text-secondary); }
+                @keyframes td-flow { to { stroke-dashoffset: -9; } }
+
+                .td-legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 14px; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); }
+                .td-legend i { display: inline-block; width: 14px; height: 9px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+                .td-legend .lg { background: var(--accent-glow); border: 1px solid var(--accent); }
+                .td-legend .lp { border-top: 2px dashed var(--accent); height: 0; }
+                .td-legend .ld { border-top: 2px dashed var(--text-secondary); height: 0; }
+              </style>
+
+              <div class="td-title"><b>3d parallelism</b> &nbsp;·&nbsp; tp × pp × dp &nbsp;·&nbsp; tp = 8, pp = 16, dp = 4</div>
+
+              <div class="td-panel">
+                <svg viewBox="0 0 900 480" xmlns="http://www.w3.org/2000/svg">
+                  <defs>
+                    <marker id="td-mk-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path class="td-head-g" d="M0 0L10 5L0 10z"/></marker>
+                    <marker id="td-mk-s" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="td-head-s" d="M0 0L10 5L0 10z"/></marker>
+                    <!-- one tensor-parallel group: 8 gpus in a node -->
+                    <g id="td-gpus">
+                      <rect class="td-gpu" x="0"  y="0"  width="24" height="24" rx="4"/>
+                      <rect class="td-gpu" x="32" y="0"  width="24" height="24" rx="4"/>
+                      <rect class="td-gpu" x="64" y="0"  width="24" height="24" rx="4"/>
+                      <rect class="td-gpu" x="96" y="0"  width="24" height="24" rx="4"/>
+                      <rect class="td-gpu" x="0"  y="32" width="24" height="24" rx="4"/>
+                      <rect class="td-gpu" x="32" y="32" width="24" height="24" rx="4"/>
+                      <rect class="td-gpu" x="64" y="32" width="24" height="24" rx="4"/>
+                      <rect class="td-gpu" x="96" y="32" width="24" height="24" rx="4"/>
+                    </g>
+                  </defs>
+
+                  <!-- top caption -->
+                  <text class="td-cap g" x="490" y="30">pipeline: stage → stage via send / recv</text>
+
+                  <!-- left labels -->
+                  <text class="td-cap l" x="14" y="127">replica 0</text>
+                  <text class="td-cap l" x="14" y="317">replica 1</text>
+
+                  <!-- ============ replica 0 ============ -->
+                  <rect class="td-node" x="130" y="60" width="150" height="124" rx="8"/>
+                  <text class="td-cap" x="205" y="82">stage 0</text>
+                  <use href="#td-gpus" x="145" y="94"/>
+                  <text class="td-cap g" x="205" y="174">tp=8 · nvlink</text>
+
+                  <rect class="td-node" x="320" y="60" width="150" height="124" rx="8"/>
+                  <text class="td-cap" x="395" y="82">stage 1</text>
+                  <use href="#td-gpus" x="335" y="94"/>
+                  <text class="td-cap g" x="395" y="174">tp=8 · nvlink</text>
+
+                  <rect class="td-node e" x="510" y="60" width="150" height="124" rx="8"/>
+                  <text class="td-cap" x="585" y="82">stages 2–14</text>
+                  <text class="td-op" x="585" y="132">···</text>
+
+                  <rect class="td-node" x="700" y="60" width="150" height="124" rx="8"/>
+                  <text class="td-cap" x="775" y="82">stage 15</text>
+                  <use href="#td-gpus" x="715" y="94"/>
+                  <text class="td-cap g" x="775" y="174">tp=8 · nvlink</text>
+
+                  <line class="td-pp" x1="284" y1="122" x2="316" y2="122" marker-end="url(#td-mk-g)"/>
+                  <line class="td-pp" x1="474" y1="122" x2="506" y2="122" marker-end="url(#td-mk-g)"/>
+                  <line class="td-pp" x1="664" y1="122" x2="696" y2="122" marker-end="url(#td-mk-g)"/>
+
+                  <!-- ============ replica 1 ============ -->
+                  <rect class="td-node" x="130" y="250" width="150" height="124" rx="8"/>
+                  <text class="td-cap" x="205" y="272">stage 0</text>
+                  <use href="#td-gpus" x="145" y="284"/>
+                  <text class="td-cap g" x="205" y="364">tp=8 · nvlink</text>
+
+                  <rect class="td-node" x="320" y="250" width="150" height="124" rx="8"/>
+                  <text class="td-cap" x="395" y="272">stage 1</text>
+                  <use href="#td-gpus" x="335" y="284"/>
+                  <text class="td-cap g" x="395" y="364">tp=8 · nvlink</text>
+
+                  <rect class="td-node e" x="510" y="250" width="150" height="124" rx="8"/>
+                  <text class="td-cap" x="585" y="272">stages 2–14</text>
+                  <text class="td-op" x="585" y="322">···</text>
+
+                  <rect class="td-node" x="700" y="250" width="150" height="124" rx="8"/>
+                  <text class="td-cap" x="775" y="272">stage 15</text>
+                  <use href="#td-gpus" x="715" y="284"/>
+                  <text class="td-cap g" x="775" y="364">tp=8 · nvlink</text>
+
+                  <line class="td-pp" x1="284" y1="312" x2="316" y2="312" marker-end="url(#td-mk-g)"/>
+                  <line class="td-pp" x1="474" y1="312" x2="506" y2="312" marker-end="url(#td-mk-g)"/>
+                  <line class="td-pp" x1="664" y1="312" x2="696" y2="312" marker-end="url(#td-mk-g)"/>
+
+                  <!-- ============ dp: same stage across replicas ============ -->
+                  <line class="td-dp" x1="205" y1="190" x2="205" y2="244" marker-start="url(#td-mk-s)" marker-end="url(#td-mk-s)"/>
+                  <text class="td-cap l" x="216" y="222">all-reduce</text>
+                  <line class="td-dp" x1="395" y1="190" x2="395" y2="244" marker-start="url(#td-mk-s)" marker-end="url(#td-mk-s)"/>
+                  <text class="td-cap l" x="406" y="222">all-reduce</text>
+                  <line class="td-dp" x1="585" y1="190" x2="585" y2="244" marker-start="url(#td-mk-s)" marker-end="url(#td-mk-s)"/>
+                  <line class="td-dp" x1="775" y1="190" x2="775" y2="244" marker-start="url(#td-mk-s)" marker-end="url(#td-mk-s)"/>
+                  <text class="td-cap l" x="786" y="222">all-reduce</text>
+
+                  <!-- remaining replicas and total -->
+                  <text class="td-cap" x="490" y="410">⋯  replicas 2 – 3 (dp = 4)  ⋯</text>
+                  <text class="td-name g" x="490" y="452">tp × pp × dp = 8 × 16 × 4 = 512 gpus</text>
+                </svg>
+              </div>
+
+              <div class="td-legend">
+                <span><i class="lg"></i>tp group: 8 gpus in a node, collectives over nvlink</span>
+                <span><i class="lp"></i>pp: send / recv between stages</span>
+                <span><i class="ld"></i>dp: gradient sync between replicas of the same stage</span>
+              </div>
+            </div>
+        </section>
+
+        <hr class="divider">
+
         <footer>
             <span>on distributed training & inference paradigms</span>
             <span>darth-c0d3r</span>
